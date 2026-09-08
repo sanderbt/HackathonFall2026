@@ -1,0 +1,28 @@
+{
+  "$schema": "https://developer-api.unimicro.no/schemas/manifest.json",
+  "manifestVersion": 1,
+  "apiVersion": "1.0",
+  "id": "plugin-factory",
+  "version": "0.1.0",
+  "name": "Hackathon Demo",
+  "views": [
+    {
+      "id": "plugin-factory",
+      "model": "native",
+      "shape": "page",
+      "entry": "./dist/views/plugin-factory/index.js",
+      "slug": "plugin-factory",
+      "menu": {
+        "label": "Hackathon Demo"
+      },
+      "placement": {
+        "appfrontend": {
+          "module": "sales",
+          "menu": {
+            "section": "common_sales"
+          }
+        }
+      }
+    }
+  ]
+}

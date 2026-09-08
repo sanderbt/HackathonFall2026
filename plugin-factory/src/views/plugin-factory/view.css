@@ -1,0 +1,7 @@
+section {
+    padding: 2rem;
+    /* Tokens cross the boundary the platform mounts this view behind, so they can be used directly.
+       Selector-based rules from the platform's stylesheets do not. */
+    color: var(--text-default);
+    font-family: var(--font-family);
+}
