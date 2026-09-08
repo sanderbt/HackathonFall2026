@@ -1,10 +1,10 @@
+import 'dotenv/config';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { EventBus } from './bus.ts';
 import { LocalRunner, type PluginTarget, type Runner } from './runner.ts';
 import { VercelRunner } from './vercel-runner.ts';
-import { runAgentTurn } from './agent.ts';
 import type { SessionSnapshot, SessionState } from './protocol.ts';
 
 /**
@@ -47,19 +47,14 @@ let active: Session | null = null;
  * which one they got, so the cloud path can be switched on without touching them.
  */
 function makeRunner(): Runner {
-    const repo = process.env.FACTORY_REPO_URL;
     const configured = Boolean(process.env.VERCEL_TOKEN || process.env.VERCEL_OIDC_TOKEN);
 
-    if (configured && repo) {
+    if (configured) {
         console.log('runner: vercel sandbox');
-        return new VercelRunner(TARGET, repo, process.env.GITHUB_TOKEN);
+        return new VercelRunner(TARGET);
     }
 
-    console.log(
-        configured
-            ? 'runner: local (set FACTORY_REPO_URL to use the sandbox)'
-            : 'runner: local (set VERCEL_TOKEN or VERCEL_OIDC_TOKEN to use the sandbox)',
-    );
+    console.log('runner: local (set VERCEL_TOKEN or VERCEL_OIDC_TOKEN to use the sandbox)');
     return new LocalRunner(TARGET);
 }
 
@@ -117,7 +112,7 @@ async function handleTurn(session: Session, text: string): Promise<void> {
         if (session.state === 'created') await provision(session);
 
         setState(session, 'working');
-        const result = await runAgentTurn(TARGET, text, session.bus, session.agentSessionId);
+        const result = await session.runner.runTurn(session.bus, text, session.agentSessionId);
         session.agentSessionId = result.sessionId;
 
         // The agent is asked to verify, but asking is not the same as knowing. The gate runs

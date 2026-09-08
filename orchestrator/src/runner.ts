@@ -1,8 +1,22 @@
 import { spawn } from 'node:child_process';
-import { cp, mkdir, rm, stat } from 'node:fs/promises';
+import { cp, mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { feedAgentLine, type TurnResult } from './agent-events.ts';
 import type { EventBus } from './bus.ts';
 import type { VerifyStep } from './protocol.ts';
+
+/**
+ * Where `run.mjs` lives on this machine.
+ *
+ * Node resolves a bare specifier like `@anthropic-ai/claude-agent-sdk` by walking up from the
+ * SCRIPT's own directory through parent `node_modules` folders — not from the process's cwd — so
+ * spawning this absolute path finds the SDK in `orchestrator/node_modules` regardless of which
+ * plugin directory the process is working in.
+ */
+const AGENT_SCRIPT = fileURLToPath(new URL('./sandbox-agent/run.mjs', import.meta.url));
 
 /**
  * Where the demo plugin lives and how it is reset between sessions.
@@ -28,6 +42,8 @@ export type VerifyResult = { step: VerifyStep; ok: boolean; output: string };
 export interface Runner {
     reset(): Promise<void>;
     startDev(bus: EventBus): Promise<void>;
+    /** Runs one turn of `run.mjs` — locally or in a sandbox — and streams its output onto `bus`. */
+    runTurn(bus: EventBus, prompt: string, resume: string | undefined): Promise<TurnResult>;
     verify(bus: EventBus): Promise<VerifyResult[]>;
     dispose(): Promise<void>;
 }
@@ -160,6 +176,45 @@ export class LocalRunner implements Runner {
                 }
             });
         });
+    }
+
+    /**
+     * Runs `run.mjs` as a plain child process, cwd'd at the plugin directory.
+     *
+     * The prompt goes to a temp FILE, not an argv string — user prose through a shell argument is a
+     * quoting accident waiting to happen, and this is the same mechanism VercelRunner uses, just
+     * without a sandbox in the way.
+     */
+    async runTurn(bus: EventBus, prompt: string, resume: string | undefined): Promise<TurnResult> {
+        const promptFile = join(tmpdir(), `factory-turn-${randomUUID()}.txt`);
+        await writeFile(promptFile, prompt, 'utf8');
+
+        try {
+            return await new Promise<TurnResult>((resolve, reject) => {
+                const args = ['--prompt-file', promptFile, '--cwd', this.target.dir];
+                if (resume) args.push('--resume', resume);
+
+                const child = spawn('node', [AGENT_SCRIPT, ...args], { env: process.env });
+                let result: TurnResult = { sessionId: resume };
+                let buffer = '';
+
+                child.stdout.on('data', (chunk: Buffer) => {
+                    buffer += chunk.toString();
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() ?? '';
+                    for (const line of lines) feedAgentLine(bus, line, (r) => (result = r));
+                });
+
+                child.stderr.on('data', (chunk: Buffer) => {
+                    bus.emit({ type: 'error', message: chunk.toString().slice(0, 2000), fatal: false });
+                });
+
+                child.on('error', reject);
+                child.on('close', () => resolve(result));
+            });
+        } finally {
+            await rm(promptFile, { force: true });
+        }
     }
 
     async verify(bus: EventBus): Promise<VerifyResult[]> {

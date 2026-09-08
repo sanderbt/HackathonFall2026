@@ -1,6 +1,37 @@
+#!/usr/bin/env node
+/**
+ * One agent turn, as a standalone process.
+ *
+ * This file is what makes the two Runners genuinely interchangeable: LocalRunner spawns it as a
+ * plain child process against the plugin on disk; VercelRunner uploads it and runs the identical
+ * script inside the sandbox. Neither the orchestrator's server nor the chat view can tell which
+ * one ran — they only ever see the NDJSON this script prints.
+ *
+ * Usage: node run.mjs --prompt-file <path> --cwd <plugin-dir> [--resume <sdk-session-id>]
+ *
+ * The prompt arrives as a FILE, never as an argv string — user prose through a shell argument is a
+ * quoting accident waiting to happen, and this runs the same way locally and in a sandbox either
+ * way.
+ *
+ * Output: one JSON object per stdout line. Every line has a `type`; see the orchestrator's
+ * `FactoryEventBody` for the shapes this mirrors. The final line is always `turn.done`, carrying
+ * the SDK session id so the next turn can resume the conversation.
+ */
+
+import { readFile } from 'node:fs/promises';
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import type { EventBus } from './bus.ts';
-import type { PluginTarget } from './runner.ts';
+
+function parseArgs(argv) {
+    const args = {};
+    for (let i = 0; i < argv.length; i += 2) {
+        args[argv[i].replace(/^--/, '')] = argv[i + 1];
+    }
+    return args;
+}
+
+function emit(event) {
+    process.stdout.write(JSON.stringify(event) + '\n');
+}
 
 /**
  * Commands the harness owns, not the agent.
@@ -47,23 +78,14 @@ If the same error survives three fix attempts, stop and explain the problem in p
 business user who asked for this. Do not thrash.
 `.trim();
 
-/**
- * Run one user turn.
- *
- * Returns the SDK session id so the next turn can resume with the conversation intact.
- */
-export async function runAgentTurn(
-    target: PluginTarget,
-    prompt: string,
-    bus: EventBus,
-    resume: string | undefined,
-): Promise<{ sessionId: string | undefined; usd?: number; turns?: number }> {
-    let sessionId = resume;
+async function main() {
+    const args = parseArgs(process.argv.slice(2));
+    const prompt = await readFile(args['prompt-file'], 'utf8');
 
     const stream = query({
         prompt,
         options: {
-            cwd: target.dir,
+            cwd: args.cwd,
             // Required. Without it the five platform skill files silently do not load, and the
             // agent writes confident code against an API it has invented.
             settingSources: ['project'],
@@ -72,7 +94,7 @@ export async function runAgentTurn(
             maxTurns: 80,
             // A thrashing loop with five skills in context gets expensive fast.
             maxBudgetUsd: 5,
-            resume,
+            resume: args.resume || undefined,
             systemPrompt: { type: 'preset', preset: 'claude_code', append: SYSTEM_PROMPT },
             hooks: {
                 // Hooks run before every other permission step, and a hook deny applies even under
@@ -81,20 +103,14 @@ export async function runAgentTurn(
                     {
                         hooks: [
                             async (input) => {
-                                // The SDK types tool_input as unknown, since its shape depends on
-                                // which tool fired. Narrow it here rather than at every use.
-                                const hook = input as {
-                                    tool_name?: string;
-                                    tool_input?: Record<string, unknown>;
-                                };
-                                const name = hook.tool_name;
-                                const args = hook.tool_input ?? {};
+                                const name = input.tool_name;
+                                const toolArgs = input.tool_input ?? {};
 
-                                if (name === 'Bash' && FORBIDDEN.test(String(args.command ?? ''))) {
+                                if (name === 'Bash' && FORBIDDEN.test(String(toolArgs.command ?? ''))) {
                                     return {
-                                        decision: 'block' as const,
+                                        decision: 'block',
                                         reason:
-                                            'That command is the harness\'s, not yours. The plugin id is already ' +
+                                            "That command is the harness's, not yours. The plugin id is already " +
                                             'reserved and permanent — creating another burns a global name forever — ' +
                                             'and the dev tunnel is already running. Edit the source and verify.',
                                     };
@@ -102,10 +118,10 @@ export async function runAgentTurn(
 
                                 if (
                                     (name === 'Write' || name === 'Edit') &&
-                                    PROTECTED.test(String(args.file_path ?? ''))
+                                    PROTECTED.test(String(toolArgs.file_path ?? ''))
                                 ) {
                                     return {
-                                        decision: 'block' as const,
+                                        decision: 'block',
                                         reason:
                                             'That file encodes a contract with `unimicro plugin dev` and is owned by ' +
                                             'the harness. Everything you need to change lives in src/views/main/.',
@@ -121,23 +137,22 @@ export async function runAgentTurn(
         },
     });
 
-    let usd: number | undefined;
-    let turns: number | undefined;
+    let sessionId = args.resume;
+    let usd;
+    let turns;
 
-    for await (const message of stream as AsyncIterable<Record<string, unknown>>) {
-        const type = message.type;
-
-        if (type === 'system' && message.subtype === 'init') {
-            sessionId = String(message.session_id ?? sessionId ?? '');
+    for await (const message of stream) {
+        if (message.type === 'system' && message.subtype === 'init') {
+            sessionId = message.session_id ?? sessionId;
 
             // Fail loudly rather than let the agent produce plausible-looking nonsense against a
             // hallucinated API. The skills are the single biggest lever on output quality.
-            const skills = (message.skills as string[] | undefined) ?? [];
+            const skills = message.skills ?? [];
             const missing = ['cli', 'plugin-dev', 'host-api', 'platform-api', 'design-system'].filter(
                 (s) => !skills.includes(s),
             );
             if (missing.length) {
-                bus.emit({
+                emit({
                     type: 'error',
                     message: `Platform skills did not load: ${missing.join(', ')}. Output would be guesswork.`,
                     fatal: true,
@@ -146,39 +161,39 @@ export async function runAgentTurn(
             continue;
         }
 
-        if (type === 'assistant') {
-            const content = (message.message as { content?: unknown[] } | undefined)?.content ?? [];
-            for (const block of content as Array<Record<string, unknown>>) {
-                if (block.type === 'text' && String(block.text).trim()) {
-                    bus.emit({ type: 'agent.text', text: String(block.text) });
+        if (message.type === 'assistant') {
+            for (const block of message.message?.content ?? []) {
+                if (block.type === 'text' && block.text?.trim()) {
+                    emit({ type: 'agent.text', text: block.text });
                 } else if (block.type === 'tool_use') {
-                    const toolName = String(block.name);
-                    if (toolName === 'Skill') {
-                        const skill = String(
-                            (block.input as { name?: unknown } | undefined)?.name ?? '',
-                        );
-                        bus.emit({ type: 'agent.skill', skill });
+                    if (block.name === 'Skill') {
+                        emit({ type: 'agent.skill', skill: block.input?.name ?? '' });
                     } else {
-                        bus.emit({ type: 'agent.tool', name: toolName, summary: summarise(block) });
+                        emit({ type: 'agent.tool', name: block.name, summary: summarise(block) });
                     }
                 }
             }
             continue;
         }
 
-        if (type === 'result') {
-            usd = message.total_cost_usd as number | undefined;
-            turns = message.num_turns as number | undefined;
+        if (message.type === 'result') {
+            usd = message.total_cost_usd;
+            turns = message.num_turns;
         }
     }
 
-    return { sessionId, usd, turns };
+    emit({ type: 'turn.done', sessionId, usd, turns });
 }
 
 /** A one-line label for a tool call — enough for a collapsed row in the transcript. */
-function summarise(block: Record<string, unknown>): string {
-    const input = (block.input ?? {}) as Record<string, unknown>;
+function summarise(block) {
+    const input = block.input ?? {};
     const first =
         input.file_path ?? input.command ?? input.pattern ?? input.path ?? input.description ?? '';
     return String(first).slice(0, 160);
 }
+
+main().catch((error) => {
+    emit({ type: 'error', message: String(error?.stack ?? error), fatal: true });
+    process.exitCode = 1;
+});

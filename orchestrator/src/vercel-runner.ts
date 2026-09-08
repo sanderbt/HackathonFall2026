@@ -1,7 +1,11 @@
-import { readFile } from 'node:fs/promises';
-import { homedir, platform } from 'node:os';
-import { join } from 'node:path';
-import { Sandbox } from '@vercel/sandbox';
+import { spawn } from 'node:child_process';
+import { readFile, rm } from 'node:fs/promises';
+import { homedir, platform, tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
+import { Sandbox, type Command } from '@vercel/sandbox';
+import { feedAgentLine, type TurnResult } from './agent-events.ts';
 import type { EventBus } from './bus.ts';
 import type { PluginTarget, Runner, VerifyResult } from './runner.ts';
 import type { VerifyStep } from './protocol.ts';
@@ -13,14 +17,21 @@ import type { VerifyStep } from './protocol.ts';
  * "unrestricted access to the public Internet" — on every plan including Hobby. Daytona's free
  * tier restricts egress to a DNS/SNI allowlist that does not include developer-api.unimicro.no and
  * cannot be overridden below its $500 tier, which would have forced the tunnel to stay on the
- * laptop. Here the whole toolchain, tunnel included, runs in one box.
+ * laptop. Here the whole toolchain, tunnel and agent both, runs in one box.
+ *
+ * Provisioning uploads the current working tree rather than cloning a git remote: it needs no
+ * GitHub token, no push, and always reflects whatever is on disk right now — including anything
+ * not yet committed. The tradeoff is that nothing here is reproducible from a URL alone; that's the
+ * right tradeoff for a single-operator prototype and the wrong one the moment a second person needs
+ * to point this at the same plugin.
  */
 
 /** Hobby caps a session at 45 minutes; Pro allows 24 hours. The SDK default is 5 MINUTES. */
 const SESSION_MS = Number(process.env.FACTORY_SANDBOX_MS ?? 45 * 60 * 1000);
 
-/** Where the plugin lives inside the sandbox. */
-const WORK = '/vercel/sandbox/plugin';
+/** Where the plugin and the agent script live inside the sandbox. */
+const PLUGIN_DIR = '/vercel/sandbox/plugin';
+const AGENT_DIR = '/vercel/sandbox/agent';
 
 const VERIFY_STEPS: ReadonlyArray<readonly [VerifyStep, string, string[]]> = [
     ['check', 'npm', ['run', 'check']],
@@ -29,6 +40,8 @@ const VERIFY_STEPS: ReadonlyArray<readonly [VerifyStep, string, string[]]> = [
     // Must follow build: with no dist/, validate reports entryFileMissing and nothing else.
     ['validate', 'unimicro', ['plugin', 'validate', '--json']],
 ];
+
+const SANDBOX_AGENT_DIR = fileURLToPath(new URL('./sandbox-agent', import.meta.url));
 
 /**
  * The CLI's session file, as the CLI itself stores it (Go's os.UserConfigDir).
@@ -47,10 +60,10 @@ function hostConfigPath(): string {
 /**
  * Read the developer's session, keeping only the lane we actually use.
  *
- * Re-read before every provision rather than cached at startup, so the freshest tokens the host CLI
- * has refreshed are the ones that go in. Note the hazard this does not solve: if the issuer rotates
- * refresh tokens, a sandbox refreshing invalidates the host's copy and logs the laptop out. Run one
- * sandbox at a time during a demo.
+ * Re-read on every provision rather than cached, so the freshest tokens the host CLI has refreshed
+ * are the ones that go in. Note the hazard this does not solve: if the issuer rotates refresh
+ * tokens, a sandbox refreshing invalidates the host's copy and logs the laptop out too. Run one
+ * sandbox at a time.
  */
 async function readSession(lane = 'test'): Promise<string> {
     const raw = JSON.parse(await readFile(hostConfigPath(), 'utf8'));
@@ -63,35 +76,61 @@ async function readSession(lane = 'test'): Promise<string> {
     return JSON.stringify({ sessions: { [lane]: session } });
 }
 
+/**
+ * Tar the plugin's working tree, excluding what a sandbox neither needs nor should get: installed
+ * dependencies (reinstalled fresh — cross-platform node_modules do not travel), build output, git
+ * history, and `.unimicro/state.json` (a stale tunnel id and PIDs from this machine).
+ */
+async function tarPlugin(dir: string): Promise<Buffer> {
+    const archive = join(tmpdir(), `factory-plugin-${randomUUID()}.tar.gz`);
+    await new Promise<void>((resolve, reject) => {
+        const tar = spawn(
+            'tar',
+            [
+                '-czf',
+                archive,
+                '--exclude=node_modules',
+                '--exclude=dist',
+                '--exclude=.git',
+                '--exclude=.unimicro/state.json',
+                // AppleDouble sidecars (._foo, carrying macOS extended attributes) are invisible in
+                // Finder but real files on disk. Untarred inside the sandbox, `._index.test.tsx`
+                // is a file vitest's glob matches — a phantom test suite that fails on nothing the
+                // agent wrote. COPYFILE_DISABLE is the documented way to stop tar writing them; it
+                // is a no-op, not an error, on a sandbox host that already has no such thing.
+                '--exclude=._*',
+                '-C',
+                dirname(dir),
+                join(dir).split('/').pop()!,
+            ],
+            { env: { ...process.env, COPYFILE_DISABLE: '1' } },
+        );
+        tar.on('error', reject);
+        tar.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`tar exited ${code}`))));
+    });
+
+    try {
+        return await readFile(archive);
+    } finally {
+        await rm(archive, { force: true });
+    }
+}
+
 export class VercelRunner implements Runner {
     private sandbox: Sandbox | null = null;
-    private dev: { kill(signal: string): Promise<unknown> } | null = null;
+    private devCmd: Command | null = null;
 
-    constructor(
-        private readonly target: PluginTarget,
-        private readonly repoUrl: string,
-        private readonly gitToken: string | undefined,
-    ) {}
+    constructor(private readonly target: PluginTarget) {}
 
     /**
-     * Create the sandbox and put the plugin, the CLI and the developer's session in it.
-     *
-     * `reset` rather than a separate provision step so the Runner interface stays the same shape as
-     * LocalRunner's: the server calls reset() then startDev() either way.
+     * Create the sandbox and put the plugin, the CLI, the agent script and the developer's session
+     * in it. Named `reset()` to keep the same shape as LocalRunner: the server calls reset() then
+     * startDev() either way, never knowing which Runner it got.
      */
     async reset(): Promise<void> {
         await this.dispose();
 
         this.sandbox = await Sandbox.create({
-            source: this.gitToken
-                ? {
-                      type: 'git',
-                      url: this.repoUrl,
-                      username: 'x-access-token',
-                      password: this.gitToken,
-                      depth: 1,
-                  }
-                : { type: 'git', url: this.repoUrl, depth: 1 },
             // Ubuntu with Node LTS and full root. x64 — @unimicro/cli ships a linux-x64 binary.
             image: 'vercel/sandbox/universal',
             resources: { vcpus: 2 },
@@ -99,11 +138,16 @@ export class VercelRunner implements Runner {
             timeout: SESSION_MS,
             // The default. Stated so nobody "tightens" it without reading the note above.
             networkPolicy: 'allow-all',
-            env: {
-                ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? '',
-                // Guarantees the CLI fails loudly instead of trying to open a browser that is not there.
-                UNIMICRO_NO_BROWSER: '1',
-            },
+            // The access-token path has to be passed explicitly: setting VERCEL_TOKEN alone falls
+            // through to OIDC and fails asking for `vercel link`. Omitting these keeps the OIDC
+            // path (VERCEL_OIDC_TOKEN from `vercel env pull`) working unchanged.
+            ...(process.env.VERCEL_TOKEN
+                ? {
+                      token: process.env.VERCEL_TOKEN,
+                      teamId: process.env.VERCEL_TEAM_ID,
+                      projectId: process.env.VERCEL_PROJECT_ID,
+                  }
+                : {}),
         });
 
         const sandbox = this.sandbox;
@@ -115,12 +159,22 @@ export class VercelRunner implements Runner {
         });
         if (install.exitCode !== 0) throw new Error(await install.stderr());
 
+        // The plugin's working tree, exactly as it sits on this machine right now.
+        const pluginTar = await tarPlugin(this.target.dir);
+        await sandbox.runCommand({ cmd: 'mkdir', args: ['-p', PLUGIN_DIR] });
+        await sandbox.writeFiles([{ path: '/vercel/sandbox/plugin.tar.gz', content: pluginTar }]);
+        const untar = await sandbox.runCommand({
+            cmd: 'tar',
+            args: ['xzf', '/vercel/sandbox/plugin.tar.gz', '-C', PLUGIN_DIR, '--strip-components=1'],
+        });
+        if (untar.exitCode !== 0) throw new Error(await untar.stderr());
+
         // The home directory is not guaranteed to be /root, and the CLI resolves its config path
         // from it, so ask rather than assume.
         const whoami = await sandbox.runCommand({ cmd: 'sh', args: ['-c', 'echo $HOME'] });
         const homePath = (await whoami.stdout()).trim() || '/root';
 
-        await sandbox.mkDir(`${homePath}/.config/unimicro`);
+        await sandbox.runCommand({ cmd: 'mkdir', args: ['-p', `${homePath}/.config/unimicro`] });
         await sandbox.writeFiles([
             {
                 path: `${homePath}/.config/unimicro/config.json`,
@@ -129,8 +183,22 @@ export class VercelRunner implements Runner {
             },
         ]);
 
-        const deps = await sandbox.runCommand({ cmd: 'npm', args: ['ci'], cwd: WORK });
+        const deps = await sandbox.runCommand({ cmd: 'npm', args: ['ci'], cwd: PLUGIN_DIR });
         if (deps.exitCode !== 0) throw new Error(await deps.stderr());
+
+        // The agent runner script, in a folder of its own — kept separate from the plugin's own
+        // package.json so the harness's tooling never pollutes the plugin's dependency graph.
+        await sandbox.runCommand({ cmd: 'mkdir', args: ['-p', AGENT_DIR] });
+        for (const file of ['package.json', 'run.mjs']) {
+            await sandbox.writeFiles([
+                {
+                    path: `${AGENT_DIR}/${file}`,
+                    content: await readFile(`${SANDBOX_AGENT_DIR}/${file}`),
+                },
+            ]);
+        }
+        const agentDeps = await sandbox.runCommand({ cmd: 'npm', args: ['install'], cwd: AGENT_DIR });
+        if (agentDeps.exitCode !== 0) throw new Error(await agentDeps.stderr());
     }
 
     /** Start the dev loop and resolve when the tunnel is up. Same NDJSON contract as locally. */
@@ -143,10 +211,10 @@ export class VercelRunner implements Runner {
                 const dev = await sandbox.runCommand({
                     cmd: 'unimicro',
                     args: ['plugin', 'dev', '--json', '--no-open', '--no-input'],
-                    cwd: WORK,
+                    cwd: PLUGIN_DIR,
                     detached: true,
                 });
-                this.dev = dev as unknown as { kill(signal: string): Promise<unknown> };
+                this.devCmd = dev;
 
                 let settled = false;
                 let buffer = '';
@@ -197,6 +265,46 @@ export class VercelRunner implements Runner {
         });
     }
 
+    /**
+     * Runs the identical `run.mjs` that LocalRunner runs, uploaded into the sandbox instead of
+     * spawned on this machine. The prompt goes in as a file for the same reason it does locally —
+     * user prose through a shell argument is a quoting accident waiting to happen.
+     */
+    async runTurn(bus: EventBus, prompt: string, resume: string | undefined): Promise<TurnResult> {
+        const sandbox = this.sandbox;
+        if (!sandbox) throw new Error('reset() must run before runTurn()');
+
+        const promptPath = `/vercel/sandbox/turn-${randomUUID()}.txt`;
+        await sandbox.writeFiles([{ path: promptPath, content: Buffer.from(prompt, 'utf8') }]);
+
+        const args = ['run.mjs', '--prompt-file', promptPath, '--cwd', PLUGIN_DIR];
+        if (resume) args.push('--resume', resume);
+
+        const turn = await sandbox.runCommand({
+            cmd: 'node',
+            args,
+            cwd: AGENT_DIR,
+            env: { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? '' },
+            detached: true,
+        });
+
+        let result: TurnResult = { sessionId: resume };
+        let buffer = '';
+
+        for await (const log of turn.logs()) {
+            if (log.stream === 'stderr' && log.data.trim()) {
+                bus.emit({ type: 'error', message: log.data.slice(0, 2000), fatal: false });
+                continue;
+            }
+            buffer += log.data;
+            const lines = buffer.split('\n');
+            buffer = lines.pop() ?? '';
+            for (const line of lines) feedAgentLine(bus, line, (r) => (result = r));
+        }
+
+        return result;
+    }
+
     async verify(bus: EventBus): Promise<VerifyResult[]> {
         const sandbox = this.sandbox;
         if (!sandbox) throw new Error('reset() must run before verify()');
@@ -204,7 +312,9 @@ export class VercelRunner implements Runner {
         const results: VerifyResult[] = [];
 
         for (const [step, cmd, args] of VERIFY_STEPS) {
-            const finished = await sandbox.runCommand({ cmd, args, cwd: WORK });
+            // detached: false pins the blocking overload — without it TS widens to the union with
+            // the detached Command type, whose exitCode is nullable until you wait() on it.
+            const finished = await sandbox.runCommand({ cmd, args, cwd: PLUGIN_DIR, detached: false });
             const ok = finished.exitCode === 0;
             const output = ok ? '' : ((await finished.stderr()) || (await finished.stdout())).slice(-4000);
 
@@ -226,8 +336,7 @@ export class VercelRunner implements Runner {
      * I/O wait.
      */
     async dispose(): Promise<void> {
-        await this.dev?.kill('SIGTERM').catch(() => {});
-        this.dev = null;
+        this.devCmd = null;
         await this.sandbox?.stop().catch(() => {});
         this.sandbox = null;
     }

@@ -5,6 +5,12 @@
     "id": "__PROJECT_ID__",
     "version": "0.1.0",
     "name": "__PROJECT_NAME__",
+    "menuSections": [
+        {
+            "id": "plugin-factory",
+            "label": "Plugin Factory"
+        }
+    ],
     "views": [
         {
             "id": "main",
@@ -19,7 +25,7 @@
                 "appfrontend": {
                     "module": "sales",
                     "menu": {
-                        "section": "common_sales"
+                        "section": "plugin-factory"
                     }
                 }
             }
