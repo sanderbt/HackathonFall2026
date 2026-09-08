@@ -1,0 +1,28 @@
+{
+  "$schema": "https://developer-api.unimicro.no/schemas/manifest.json",
+  "manifestVersion": 1,
+  "apiVersion": "1.0",
+  "id": "factory-demo-alfa",
+  "version": "0.1.0",
+  "name": "Factory Demo",
+  "views": [
+    {
+      "id": "main",
+      "model": "native",
+      "shape": "page",
+      "entry": "./dist/views/main/index.js",
+      "slug": "main",
+      "menu": {
+        "label": "Factory Demo"
+      },
+      "placement": {
+        "appfrontend": {
+          "module": "sales",
+          "menu": {
+            "section": "common_sales"
+          }
+        }
+      }
+    }
+  ]
+}

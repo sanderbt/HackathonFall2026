@@ -1,7 +1,124 @@
-section {
-    padding: 2rem;
-    /* Tokens cross the boundary the platform mounts this view behind, so they can be used directly.
-       Selector-based rules from the platform's stylesheets do not. */
+/* Tokens cross the boundary the platform mounts this view behind, so they can be used directly.
+   Selector-based rules from the platform's stylesheets do not. */
+:host {
+    display: block;
+}
+
+.view {
     color: var(--text-default);
     font-family: var(--font-family);
+}
+
+section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    padding: 1.5rem;
+    max-width: 56rem;
+    margin: 0 auto;
+    height: 100%;
+    box-sizing: border-box;
+}
+
+.transcript {
+    flex: 1;
+    min-height: 18rem;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.row {
+    padding: 0.6rem 0.85rem;
+    border-radius: 0.5rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.row.user {
+    align-self: flex-end;
+    max-width: 80%;
+    background: var(--surface-selected, rgba(0, 0, 0, 0.06));
+}
+
+.row.assistant {
+    align-self: flex-start;
+    max-width: 90%;
+}
+
+/* Tool calls, skill reads and gate results. Present but quiet — they are texture, not content. */
+.row.note {
+    padding: 0.15rem 0.85rem;
+    font-size: 0.8125rem;
+    color: var(--text-subdued, #666);
+    font-family: ui-monospace, monospace;
+}
+
+.empty {
+    margin: auto;
+    text-align: center;
+    color: var(--text-subdued, #666);
+}
+
+.suggestions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    justify-content: center;
+    margin-top: 0.75rem;
+}
+
+.ready .url {
+    font-family: ui-monospace, monospace;
+    font-size: 0.75rem;
+    color: var(--text-subdued, #666);
+    /* Selectable on purpose: openExternal runs after an async host hop, so it is not in a
+       user-gesture stack and a popup blocker will eat it at least once. */
+    user-select: all;
+    overflow-wrap: anywhere;
+}
+
+.status {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0;
+    min-height: 1.25rem;
+    font-size: 0.875rem;
+    color: var(--text-subdued, #666);
+}
+
+.composer {
+    display: flex;
+    gap: 0.5rem;
+    align-items: flex-end;
+}
+
+.composer uni-textarea {
+    flex: 1;
+}
+
+/* The design system ships no spinner — only a `loading` attribute on buttons — so the streaming
+   indicator is ours to build. */
+.dots {
+    width: 1.5rem;
+    height: 0.5rem;
+    background:
+        radial-gradient(circle 2px at 3px 50%, currentColor 99%, transparent) 0 0 / 8px 100% no-repeat,
+        radial-gradient(circle 2px at 3px 50%, currentColor 99%, transparent) 8px 0 / 8px 100% no-repeat,
+        radial-gradient(circle 2px at 3px 50%, currentColor 99%, transparent) 16px 0 / 8px 100% no-repeat;
+    animation: pulse 1.2s infinite steps(1);
+}
+
+@keyframes pulse {
+    0% {
+        opacity: 0.3;
+    }
+    33% {
+        opacity: 0.6;
+    }
+    66% {
+        opacity: 1;
+    }
 }

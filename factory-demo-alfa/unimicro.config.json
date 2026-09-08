@@ -1,0 +1,36 @@
+{
+  "$schema": "https://developer-api.unimicro.no/schemas/unimicro.config.json",
+  "build": {
+    "command": "npm run build",
+    "outDir": "dist"
+  },
+  "dev": {
+    "mode": "proxy",
+    "command": "npm run dev",
+    "url": "http://localhost:5456",
+    "watch": [
+      "src",
+      "manifest.json"
+    ],
+    "entryMap": {
+      "^dist/views/(.+)/index\\.js$": "src/views/$1/index.ts"
+    }
+  },
+  "serve": {
+    "roots": [
+      "dist"
+    ]
+  },
+  "artifact": {
+    "include": [
+      "dist/**"
+    ],
+    "exclude": [
+      "**/*.map"
+    ]
+  },
+  "keep": [
+    "src/views/**"
+  ],
+  "templateSource": "/Users/sandertorvik/Documents/GitHub/HackathonFall2026/templates/vite-react"
+}

@@ -1,0 +1,19 @@
+{
+    "name": "plugin-factory-orchestrator",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "dev": "tsx watch src/server.ts",
+        "start": "tsx src/server.ts",
+        "check": "tsc --noEmit"
+    },
+    "dependencies": {
+        "@anthropic-ai/claude-agent-sdk": "^0.3.263",
+        "@vercel/sandbox": "^3.2.1"
+    },
+    "devDependencies": {
+        "@types/node": "^22.0.0",
+        "tsx": "^4.19.0",
+        "typescript": "^5.9.0"
+    }
+}

@@ -1,0 +1,28 @@
+{
+    "$schema": "https://developer-api.unimicro.no/schemas/manifest.json",
+    "manifestVersion": 1,
+    "apiVersion": "1.0",
+    "id": "__PROJECT_ID__",
+    "version": "0.1.0",
+    "name": "__PROJECT_NAME__",
+    "views": [
+        {
+            "id": "main",
+            "model": "native",
+            "shape": "page",
+            "entry": "./dist/views/main/index.js",
+            "slug": "main",
+            "menu": {
+                "label": "__PROJECT_NAME__"
+            },
+            "placement": {
+                "appfrontend": {
+                    "module": "sales",
+                    "menu": {
+                        "section": "common_sales"
+                    }
+                }
+            }
+        }
+    ]
+}

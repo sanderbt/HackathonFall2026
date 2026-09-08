@@ -1,4 +1,5 @@
 import { beforeAll, expect, it } from 'vitest';
+import { act } from 'react';
 import View from './index';
 import type { HostError, UnimicroHost } from '@unimicro/plugin-types';
 
@@ -6,12 +7,16 @@ import type { HostError, UnimicroHost } from '@unimicro/plugin-types';
  * The example this project's tests grow from.
  *
  * A view is a custom element, so a test defines it, hands it a host, and reads the DOM it renders —
- * no platform, no tunnel, no company with the right data in it. Everything the view asks the platform
- * for arrives through `host`, so a stub of the parts a test cares about is the whole fixture.
+ * no platform, no tunnel, no company with the right data in it. Everything the view asks the
+ * platform for arrives through `host`, so a stub of the parts a test cares about is the whole
+ * fixture.
  */
 beforeAll(() => {
-    // The name is this test's own: the platform picks the tag it mounts under, and defining the same
-    // class twice under one name throws.
+    // Tells React this is a test environment, so act() flushes effects instead of warning.
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+    // The name is this test's own: the platform picks the tag it mounts under, and defining the
+    // same class twice under one name throws.
     customElements.define('test-view', View);
 });
 
@@ -33,7 +38,7 @@ const silentLog: StubHost['log'] = { info: () => {}, warn: () => {}, error: () =
 function stubHost(companyName: string): UnimicroHost {
     const host: StubHost = {
         getContext: async () => ({
-            plugin: { id: 'plugin-factory', version: '0.1.0' },
+            plugin: { id: 'factory-demo-alfa', version: '0.1.0' },
             user: { name: 'Ada Lovelace', email: 'ada@example.com' },
             company: { name: companyName, orgNumber: '999888777', key: 'demo' },
         }),
@@ -61,35 +66,48 @@ function failingHost(): UnimicroHost {
 }
 
 /**
- * Two waits, and both are needed. The first update is the render that happens before
- * connectedCallback's `await` comes back, so it has no company in it yet; letting the microtask
- * queue drain runs the rest of connectedCallback, and the second wait is the render its assignment
- * schedules. Asserting after the first one reads the empty view.
+ * act() wraps the whole mount, so React's first render, its effects and the promise those effects
+ * awaited have all settled by the time it returns. Asserting without it reads the empty view.
  */
-async function settle(view: View) {
-    await view.updateComplete;
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await view.updateComplete;
+async function mount(host: UnimicroHost) {
+    const view = document.createElement('test-view') as HTMLElement & { host: UnimicroHost };
+    view.host = host;
+
+    await act(async () => {
+        document.body.append(view);
+    });
+
+    return view;
 }
 
 it('shows the company it is running in', async () => {
-    const view = document.createElement('test-view') as View;
-    view.host = stubHost('Acme Freight AS');
-
-    document.body.append(view);
-    await settle(view);
+    const view = await mount(stubHost('Acme Freight AS'));
 
     expect(view.shadowRoot?.textContent).toContain('Acme Freight AS');
 });
 
 it('says so when the platform refuses', async () => {
-    const view = document.createElement('test-view') as View;
-    view.host = failingHost();
-
-    document.body.append(view);
-    await settle(view);
+    const view = await mount(failingHost());
 
     // The point of this one is that the view neither throws nor sits there implying the data is
     // still on its way. What it says is yours to change; that it says something is the contract.
-    expect(view.shadowRoot?.textContent).toContain('Could not read which company this is running in.');
+    expect(view.shadowRoot?.textContent).toContain(
+        'Could not read which company this is running in.',
+    );
+});
+
+it('keeps its state when it is moved in the DOM', async () => {
+    const view = await mount(stubHost('Acme Freight AS'));
+
+    // An element moved in the DOM disconnects and reconnects on the same live handle. A view that
+    // rebuilt its React root here would come back blank and re-run every effect. This test is what
+    // stops someone "simplifying" the queueMicrotask/isConnected dance in react-view.ts.
+    const elsewhere = document.createElement('div');
+    document.body.append(elsewhere);
+
+    await act(async () => {
+        elsewhere.append(view);
+    });
+
+    expect(view.shadowRoot?.textContent).toContain('Acme Freight AS');
 });
