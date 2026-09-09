@@ -3,6 +3,15 @@
 :host {
     display: block;
     height: 100%;
+
+    /* One spacing scale, four steps, used for every gap and margin below. The gaps here used to be
+       picked one at a time — 1.25, 1, 0.5, 0.25 — which is why nothing on the screen read as
+       grouped: proximity only says "these belong together" when the distances it is measured
+       against are the same handful of values everywhere. */
+    --s1: 0.5rem;
+    --s2: 1rem;
+    --s3: 1.5rem;
+    --s4: 2rem;
 }
 
 .view {
@@ -15,29 +24,61 @@
 }
 
 /* One screen, no page scroll. Nothing here grows with the number of events, which is what made the
-   old view scroll. */
+   old view scroll.
+
+   Every row in this column is centred on the same axis, and the column is 44rem rather than 60rem.
+   Two things went wrong at 60rem with each row aligned independently: the composer and the rail
+   spanned nearly twice the width of the text above them, and every row picked its own alignment,
+   so the screen read as several layouts stacked rather than one. 44rem is narrow enough that the
+   sentence-long example prompts stack instead of wrapping into ragged rows, and wide enough for
+   the four progress steps to sit on one line. */
 section {
     display: flex;
     flex-direction: column;
-    gap: 1.25rem;
-    padding: 1.5rem 2rem 2rem;
-    max-width: 60rem;
+    align-items: center;
+    gap: var(--s3);
+    padding: var(--s3) var(--s4) var(--s4);
+    max-width: 44rem;
     margin: 0 auto;
     height: 100%;
     box-sizing: border-box;
     overflow: hidden;
+    text-align: center;
 }
 
-/* Takes all the leftover height, which is what puts the composer and the rail at the bottom of the
-   frame and the hero in the middle of what is left. Capping it instead leaves two pools of empty
-   space — one inside this box, one under the composer — and reads as a small view in a big window. */
+/* The plugin's name, not the screen's headline — the question in the stage is that, and at
+   `uni-page-header`'s 1.375rem/500 the two competed. A nameplate: small, quiet, spaced out, and
+   the only uppercase thing here so it reads as a title rather than as another label. */
+.title {
+    margin: 0;
+    flex: none;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-subdued, #666);
+}
+
+/* The column centres its rows, which is right for everything except the alerts: an alert is a
+   banner about the whole view, so it spans the column, and its message is prose, so it reads from
+   the left like the log does. */
+section > uni-alert {
+    align-self: stretch;
+    flex: none;
+    text-align: left;
+}
+
+/* Takes all the leftover height, which is what puts the status bar and the composer at the bottom
+   of the frame and the hero in the middle of what is left. Capping it instead leaves two pools of
+   empty space — one inside this box, one under the composer — and reads as a small view in a big
+   window. */
 .stage {
     flex: 1;
+    align-self: stretch;
     min-height: 12rem;
     display: flex;
     align-items: center;
     justify-content: center;
-    text-align: center;
     overflow: hidden;
 }
 
@@ -47,7 +88,7 @@ section {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 1rem;
+    gap: var(--s2);
     width: 100%;
     min-width: 0;
 }
@@ -55,31 +96,35 @@ section {
 /* Same size and weight as `.message`: the question and the progress line are the same rung of the
    hierarchy, one per state, and an `h2`'s default bold would make this one shout by comparison. */
 .intro h2 {
-    margin: 0 0 0.25rem;
+    margin: 0 0 var(--s3);
     font-weight: 500;
     font-size: 1.5rem;
     line-height: 1.4;
 }
 
-/* `:not` so this does not also flatten `.reassure`'s top margin, which it outranks on specificity. */
-.intro p:not(.reassure) {
+/* Names the group under it — the examples, the progress steps — instead of repeating the heading
+   above it, which is what the subtitle that used to sit here did. Deliberately not the uppercase
+   treatment `.title` gets: two of these on screen at once, shouting, would flatten the difference
+   between the view's name and a caption inside it. */
+.label {
     margin: 0;
+    font-size: 0.8125rem;
     color: var(--text-subdued, #666);
 }
 
 .suggestions {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.5rem;
+    gap: var(--s1);
     justify-content: center;
-    margin-top: 1rem;
+    margin-top: var(--s1);
 }
 
 .wait {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 0.5rem;
+    gap: var(--s1);
 }
 
 .message {
@@ -117,8 +162,8 @@ section {
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 0.5rem;
-    margin: 0.5rem 0 0;
+    gap: var(--s1);
+    margin: var(--s1) 0 0;
     font-size: 0.875rem;
     color: var(--text-subdued, #666);
 }
@@ -168,47 +213,87 @@ section {
     animation: pulse 1.2s infinite steps(1);
 }
 
-.rail {
+/* The rail's container. Four step labels with no subject were the least legible thing on the
+   screen: a caption is what says they describe the build rather than decorate the gap above the
+   composer. */
+.status {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--s2);
     flex: none;
+    max-width: 100%;
 }
 
+/* `align-self` is the whole point of this rule. The stepper centres its steps inside its own box
+   and paints a tinted band across the full width of it, so stretched to the width of the column it
+   drew a band from edge to edge with the first step landing on the composer's left edge. Sized to
+   its content, the band hugs the four steps and the group sits on the column's centre line with
+   everything else. */
+.rail {
+    flex: none;
+    align-self: center;
+    max-width: 100%;
+}
+
+/* The send button gets its own row under the field rather than being wedged against its
+   bottom-right corner: beside a box this wide a default-width button read as an afterthought stuck
+   to the edge, and `resize="auto"` means the box it was aligned to changes height as you type. */
 .composer {
     display: flex;
-    gap: 0.5rem;
-    align-items: flex-end;
+    flex-direction: column;
+    gap: var(--s2);
+    align-self: stretch;
     flex: none;
 }
 
 .composer uni-textarea {
-    flex: 1;
+    width: 100%;
+    /* The field's own label and validation copy are left-aligned by the design system; the
+       centring the column applies to everything else would fight it. */
+    text-align: left;
 }
 
-/* Inert and out of the way until the build lands. */
+.composer__send {
+    display: flex;
+    justify-content: center;
+}
+
+/* Inert and out of the way until the build lands — and separated from the example prompts above it
+   by a step of the scale, because the difference between "here is something you could ask for" and
+   "here is the way out of this screen" has to be visible before it is clicked. */
 .open {
     display: flex;
     justify-content: center;
     flex: none;
     max-width: 100%;
+    margin-top: var(--s1);
 }
 
 /* Then it becomes the point of the screen: given its own room, and the only primary button on it.
    Nothing else here competes for the eye. */
 .open--ready {
-    margin-top: 0.5rem;
+    margin-top: var(--s2);
 }
 
 /* Everything the agent says about itself lives here: opt-in, capped, and scrolling inside its own
-   box so opening it can never make the view itself scroll. */
+   box so opening it can never make the view itself scroll. Left-aligned on purpose — it is the one
+   thing on the screen that is read rather than looked at, and centred log lines are unreadable. */
 .log {
     flex: none;
-    /* The panel sizes itself narrower than the column it sits in, which left the bottom edge of the
-       view ragged against the composer above it. */
+    align-self: stretch;
     width: 100%;
     box-sizing: border-box;
+    text-align: left;
 }
 
+/* The cap the expansion panel used to apply through `max-height`. It belongs on the <pre> either
+   way: the log is the only thing in here that can grow without limit, and it is the log that
+   should scroll. */
 .log pre {
     margin: 0;
+    max-height: 9rem;
+    overflow: auto;
     font-size: 0.75rem;
     line-height: 1.5;
     color: var(--text-subdued, #666);

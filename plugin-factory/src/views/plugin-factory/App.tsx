@@ -429,11 +429,16 @@ export default function App({ host }: ViewProps) {
      * The point of the entire screen once a build lands, so it sits in the stage rather than in a
      * corner underneath the composer — and present but inert before then, because the URL goes
      * live the moment the tunnel is up and what it serves until `done` is the plugin as it was.
+     *
+     * Inert, it is `tertiary`: as a `secondary` it was the same shape and colour as the example
+     * prompts it sat under, so the one control that navigates out of this view read as a fourth
+     * suggestion. Nothing else on the intro is tertiary, and the stylesheet puts a step of the
+     * spacing scale between it and the suggestion group.
      */
     const open = previewUrl && (
         <div className={ready ? 'open open--ready' : 'open'}>
             <uni-button
-                variant={ready ? 'primary' : 'secondary'}
+                variant={ready ? 'primary' : 'tertiary'}
                 small={!ready || undefined}
                 disabled={!ready || undefined}
                 onClick={() => openPlugin(previewUrl)}
@@ -445,7 +450,13 @@ export default function App({ host }: ViewProps) {
 
     return (
         <section>
-            <uni-page-header heading="Plugin Factory" />
+            {/* Not `uni-page-header`. That component is page chrome — a 5.25rem sticky bar with its
+                own side padding and a rule underneath — and this view is a single centred column
+                that never scrolls, so the bar sat inside the column misaligned with it, ruled off
+                from it, and printed the plugin's name at nearly the size of the question below it.
+                Two headings, one of them furniture. The name is a nameplate here; the question is
+                the headline, and the h1 is styled to say so. */}
+            <h1 className="title">Plugin Factory</h1>
 
             {unreachable && (
                 <uni-alert type="critical" header="Cannot reach the plugin factory">
@@ -516,8 +527,11 @@ export default function App({ host }: ViewProps) {
                         </div>
                     ) : (
                         <div className="intro">
+                            {/* One question, asked once. The "in plain language" half of what used
+                                to be two near-identical lines now lives in the composer's
+                                placeholder, where it is read at the moment it is acted on. */}
                             <h2>What should your plugin do?</h2>
-                            <p>Describe the functionality you want, in plain language.</p>
+                            <p className="label">For example</p>
                             <div className="suggestions">
                                 {SUGGESTIONS.map((s) => (
                                     <uni-button
@@ -543,16 +557,22 @@ export default function App({ host }: ViewProps) {
                 </div>
             </div>
 
-            <uni-stepper horizontal class="rail">
-                {STEPS.map(({ phase: step, name }, i) => (
-                    <uni-step
-                        key={step}
-                        name={name}
-                        active={(i === at && phase !== 'done') || undefined}
-                        completed={(at >= 0 && (i < at || phase === 'done')) || undefined}
-                    />
-                ))}
-            </uni-stepper>
+            {/* The rail used to float between the suggestions and the composer, belonging to
+                neither and captioned by nothing — four labels a reader had to guess the subject of.
+                Named and boxed, it reads as the status of the thing being built. */}
+            <div className="status" role="group" aria-label="Build progress">
+                <p className="label">Build progress</p>
+                <uni-stepper horizontal class="rail">
+                    {STEPS.map(({ phase: step, name }, i) => (
+                        <uni-step
+                            key={step}
+                            name={name}
+                            active={(i === at && phase !== 'done') || undefined}
+                            completed={(at >= 0 && (i < at || phase === 'done')) || undefined}
+                        />
+                    ))}
+                </uni-stepper>
+            </div>
 
             <div
                 className="composer"
@@ -563,27 +583,47 @@ export default function App({ host }: ViewProps) {
                     }
                 }}
             >
+                {/* The placeholder is not an example. A fifth one here, absent from the curated
+                    three above, made the whole set look generated rather than chosen; this says
+                    how to write instead, which is the half of the old intro copy worth keeping. */}
                 <uni-textarea
                     ref={composer}
                     label="Describe the plugin you want"
                     label-hidden
                     resize="auto"
                     readonly={waiting || undefined}
-                    placeholder={waiting ? 'Working on it…' : 'A page that lists overdue invoices…'}
+                    placeholder={
+                        waiting
+                            ? 'Working on it…'
+                            : 'Describe a page or a change, in plain language…'
+                    }
                 />
-                <uni-button
-                    loading={working || undefined}
-                    disabled={waiting || undefined}
-                    onClick={() => submit()}
-                >
-                    Send
-                </uni-button>
+                {/* Under the field, centred, rather than wedged against its bottom-right corner.
+                    Beside a box this wide a default-width button reads as an afterthought stuck to
+                    the edge, and `resize="auto"` means the box it was aligned to changes height as
+                    you type. Its own row cannot be knocked out of alignment by either. */}
+                <div className="composer__send">
+                    <uni-button
+                        loading={working || undefined}
+                        disabled={waiting || undefined}
+                        onClick={() => submit()}
+                    >
+                        Send
+                    </uni-button>
+                </div>
             </div>
 
+            {/* `uni-details`, not `uni-expansion-panel`. The panel prints its own toggle label
+                beside the header, and that label defaults to Norwegian — "Åpne" on an otherwise
+                English screen — so the only way to keep it in one language was to pass
+                `open-label`/`close-label` and keep them in step with the rest of the copy. Details
+                has no second label to leak, and no border: the panel was the one boxed thing on a
+                flat screen, which made the debug log look like a debug panel someone forgot to
+                take out. Its `max-height` goes on the <pre> instead — see the stylesheet. */}
             {log.length > 0 && (
-                <uni-expansion-panel header="Technical details" max-height="9rem" class="log">
+                <uni-details label="Technical details" class="log">
                     <pre>{log.join('\n')}</pre>
-                </uni-expansion-panel>
+                </uni-details>
             )}
         </section>
     );

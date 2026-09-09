@@ -113,7 +113,10 @@ it('offers a way in before anything has happened', async () => {
     install();
     const view = await mount();
 
-    expect(view.shadowRoot?.textContent).toContain('Describe the functionality you want');
+    expect(view.shadowRoot?.textContent).toContain('What should your plugin do?');
+    // The examples are the way in for someone who does not know what to type, so an intro that
+    // renders without them is not offering a way in.
+    expect(view.shadowRoot?.textContent).toContain('List my ten largest unpaid customer invoices');
 });
 
 it('shows the plugin link once the tunnel is up', async () => {
