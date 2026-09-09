@@ -2,6 +2,9 @@ import { afterEach, beforeAll, expect, it, vi } from 'vitest';
 import { act } from 'react';
 import View from './index';
 import type { UnimicroHost } from '@unimicro/plugin-types';
+// The one import from the view's own code. Seeding what a reload would have left behind is better
+// done through the function that writes it than by hardcoding its storage key in a test.
+import { remember } from '#lib/orchestrator';
 
 /**
  * A view is a custom element, so a test defines it, hands it a host, and reads the DOM it renders —
@@ -57,20 +60,43 @@ class FakeEventSource {
     }
 }
 
-function install({ sessionOk }: { sessionOk: boolean }) {
+/**
+ * The orchestrator, as far as the view can tell.
+ *
+ * Routed by URL rather than answering everything identically, because the view now asks two
+ * different questions — is there a session to pick back up, and if not give me a new one — and a
+ * stub that cannot tell them apart cannot exercise either.
+ */
+function install({
+    sessionOk = true,
+    snapshot = null,
+}: { sessionOk?: boolean; snapshot?: unknown } = {}) {
     FakeEventSource.instances = [];
     vi.stubGlobal('EventSource', FakeEventSource);
+
+    const calls: string[] = [];
     vi.stubGlobal(
         'fetch',
-        vi.fn(async () =>
-            sessionOk
-                ? ({ ok: true, json: async () => ({ sessionId: 's1' }) } as Response)
-                : ({ ok: false, status: 500, json: async () => ({}) } as Response),
-        ),
+        vi.fn(async (url: string) => {
+            calls.push(String(url));
+            if (!sessionOk) return { ok: false, status: 500, json: async () => ({}) } as Response;
+            if (/\/api\/sessions\/[^/]+$/.test(String(url))) {
+                return snapshot
+                    ? ({ ok: true, status: 200, json: async () => snapshot } as Response)
+                    : ({ ok: false, status: 404, json: async () => ({}) } as Response);
+            }
+            return { ok: true, status: 201, json: async () => ({ sessionId: 's1' }) } as Response;
+        }),
     );
+    return calls;
 }
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+    vi.unstubAllGlobals();
+    // The view remembers its session across a reload, which means across a test too. Left in
+    // place, the next mount resumes the last test's session instead of starting clean.
+    sessionStorage.clear();
+});
 
 async function mount() {
     const view = document.createElement('test-view') as HTMLElement & { host: UnimicroHost };
@@ -84,14 +110,14 @@ async function mount() {
 }
 
 it('offers a way in before anything has happened', async () => {
-    install({ sessionOk: true });
+    install();
     const view = await mount();
 
     expect(view.shadowRoot?.textContent).toContain('Describe the functionality you want');
 });
 
 it('shows the plugin link once the tunnel is up', async () => {
-    install({ sessionOk: true });
+    install();
     const view = await mount();
 
     await act(async () => {
@@ -105,8 +131,10 @@ it('shows the plugin link once the tunnel is up', async () => {
     });
 
     expect(view.shadowRoot?.textContent).toContain('Open your plugin');
-    // The URL is rendered as selectable text too, because a popup blocker will eat the button.
-    expect(view.shadowRoot?.textContent).toContain('tunnelId=t_x');
+    // The button carries the URL; the URL itself is not beside it. A tunnel address is noise to the
+    // person reading this, and `openExternal` is the host doing the opening, not a popup to block.
+    // It stays in the log under "Technical details", which is why this asserts on the stage.
+    expect(stage(view)).not.toContain('tunnelId=t_x');
 });
 
 it('says so when the orchestrator is not answering', async () => {
@@ -123,7 +151,7 @@ it('says so when the orchestrator is not answering', async () => {
 });
 
 it('closes the stream when the view goes away', async () => {
-    install({ sessionOk: true });
+    install();
     const view = await mount();
     const source = FakeEventSource.instances[0];
 
@@ -134,4 +162,167 @@ it('closes the stream when the view goes away', async () => {
     // Nothing else closes this. An EventSource left open keeps reconnecting inside the platform's
     // own page for the life of the tab.
     expect(source.closed).toBe(true);
+});
+
+/** What the waiting person reads. The stage is the only part of the view that speaks to them. */
+function stage(view: HTMLElement): string {
+    return view.shadowRoot?.querySelector('.stage')?.textContent ?? '';
+}
+
+it("keeps the agent's own narration off the screen while it works", async () => {
+    install();
+    const view = await mount();
+    const source = FakeEventSource.instances[0];
+
+    await act(async () => {
+        source.emit({ seq: 1, type: 'session.state', state: 'working' });
+        source.emit({ seq: 2, type: 'agent.skill', skill: 'platform-api' });
+        source.emit({ seq: 3, type: 'agent.tool', name: 'Edit', summary: 'src/views/main/App.tsx' });
+        source.emit({ seq: 4, type: 'verify.step', step: 'build', ok: true });
+    });
+
+    // The events still arrive and still drive the indicator — they are simply not the content.
+    // They stay reachable under "Technical details", which is why this asserts on the stage rather
+    // than on the whole view.
+    expect(stage(view)).not.toContain('platform-api');
+    expect(stage(view)).not.toContain('src/views/main/App.tsx');
+    expect(stage(view)).toContain('Still going');
+});
+
+it('moves the waiting message every time the agent shows a sign of life', async () => {
+    install();
+    const view = await mount();
+    const source = FakeEventSource.instances[0];
+
+    await act(async () => {
+        source.emit({ seq: 1, type: 'session.state', state: 'working' });
+    });
+    const first = view.shadowRoot?.querySelector('.message')?.textContent;
+
+    await act(async () => {
+        source.emit({ seq: 2, type: 'agent.tool', name: 'Write', summary: 'view.css' });
+    });
+
+    // Someone who cannot read the tool calls needs other evidence that this is alive, and this is
+    // that evidence — so it is worth a test. A message that never moves is a hung factory.
+    expect(view.shadowRoot?.querySelector('.message')?.textContent).not.toBe(first);
+});
+
+it('says the plugin is ready rather than listing the gates that passed', async () => {
+    install();
+    const view = await mount();
+    const source = FakeEventSource.instances[0];
+
+    await act(async () => {
+        source.emit({ seq: 1, type: 'agent.text', text: 'Added an overdue invoices page.' });
+        source.emit({ seq: 2, type: 'session.state', state: 'updated' });
+    });
+
+    expect(stage(view)).toContain('Your plugin is ready');
+    // The closing summary is the one piece of the agent's narration written for the reader.
+    expect(stage(view)).toContain('Added an overdue invoices page.');
+});
+
+/** Finds a design-system button by its label, since nothing here registers <uni-button>. */
+function button(view: HTMLElement, label: string): Element | undefined {
+    return [...(view.shadowRoot?.querySelectorAll('uni-button') ?? [])].find((b) =>
+        b.textContent?.includes(label),
+    );
+}
+
+it('picks a running build back up rather than starting a second one', async () => {
+    remember({ id: 's0', request: 'Show my most recent customers', startedAt: Date.now() });
+    const calls = install({
+        snapshot: {
+            sessionId: 's0',
+            state: 'working',
+            pluginId: 'factory-demo-alfa',
+            previewUrl: 'https://test.unimicro.no/#/plugins/sales/x/main?tunnelId=t_y',
+            events: [
+                { seq: 1, type: 'session.state', state: 'provisioning' },
+                { seq: 2, type: 'session.state', state: 'working' },
+                { seq: 3, type: 'agent.tool', name: 'Edit', summary: 'App.tsx' },
+            ],
+        },
+    });
+    const view = await mount();
+
+    // The whole point: a reload used to abandon the build and commission another one.
+    expect(calls.some((url) => url.endsWith('/api/sessions'))).toBe(false);
+    // And the stream asks only for the gap, because the history is already on screen.
+    expect(FakeEventSource.instances[0].url).toContain('lastEventId=3');
+    expect(stage(view)).toContain('Show my most recent customers');
+    expect(stage(view)).toContain('Still going');
+});
+
+it('starts clean when the remembered session is gone', async () => {
+    remember({ id: 'stale', request: null, startedAt: null });
+    const calls = install(); // no snapshot: the orchestrator answers 404
+
+    await mount();
+
+    expect(calls.some((url) => url.endsWith('/api/sessions'))).toBe(true);
+    expect(FakeEventSource.instances[0].url).not.toContain('lastEventId');
+});
+
+it('applies an event once, however many times it arrives', async () => {
+    install();
+    const view = await mount();
+    const source = FakeEventSource.instances[0];
+
+    await act(async () => {
+        source.emit({ seq: 1, type: 'agent.tool', name: 'Edit', summary: 'view.css' });
+        // What a reconnect looks like from here: the orchestrator replays from the last id the
+        // browser saw, which overlaps whatever was already applied.
+        source.emit({ seq: 1, type: 'agent.tool', name: 'Edit', summary: 'view.css' });
+    });
+
+    const lines = (view.shadowRoot?.querySelector('.log pre')?.textContent ?? '').split('\n');
+    expect(lines.filter((line) => line.includes('view.css'))).toHaveLength(1);
+});
+
+it('holds the link to the result back until the build is done', async () => {
+    install();
+    const view = await mount();
+    const source = FakeEventSource.instances[0];
+
+    await act(async () => {
+        source.emit({ seq: 1, type: 'session.state', state: 'working' });
+        source.emit({
+            seq: 2,
+            type: 'preview.ready',
+            url: 'https://test.unimicro.no/#/plugins/sales/x/main?tunnelId=t_z',
+            tunnelId: 't_z',
+            companyKey: 'k',
+        });
+    });
+
+    // The URL goes live the moment the tunnel is up, but what it serves until the turn lands is the
+    // plugin as it was — so it is shown, and it is not yet clickable.
+    expect(button(view, 'Open your plugin')?.hasAttribute('disabled')).toBe(true);
+
+    await act(async () => {
+        source.emit({ seq: 3, type: 'session.state', state: 'updated' });
+    });
+
+    expect(button(view, 'Open your plugin')?.hasAttribute('disabled')).toBe(false);
+    // ...and it becomes the point of the screen rather than a footnote under the composer.
+    expect(view.shadowRoot?.querySelector('.open--ready')).not.toBeNull();
+});
+
+it('can be told to try again after the orchestrator was down', async () => {
+    install({ sessionOk: false });
+    const view = await mount();
+
+    expect(button(view, 'Try again')).toBeDefined();
+
+    // Nothing retries a session that was never created — EventSource only reconnects a stream it
+    // already had — so this button is the only way out of that state short of a reload.
+    install();
+    await act(async () => {
+        button(view, 'Try again')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(FakeEventSource.instances[0]).toBeDefined();
+    expect(view.shadowRoot?.textContent).not.toContain('Nothing is answering at');
 });

@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
-import { readFile, rm } from 'node:fs/promises';
-import { homedir, platform, tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { homedir, platform } from 'node:os';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { Sandbox, type Command } from '@vercel/sandbox';
@@ -50,11 +50,23 @@ const SANDBOX_AGENT_DIR = fileURLToPath(new URL('./sandbox-agent', import.meta.u
  * a loopback redirect, device code is disabled on the current registration, and there is no
  * client-credentials grant. There is also no token flag — `--api-url`, `--issuer` and `--client-id`
  * exist only on a CLI built from source.
+ *
+ * All three branches mirror `os.UserConfigDir` exactly, because the point is to read what the CLI
+ * wrote. Note that Windows is `%AppData%` — Roaming, not Local — and that Go does *not* consult
+ * `XDG_CONFIG_HOME` there, so neither does this. Getting that branch wrong fails as a raw ENOENT on
+ * a path nobody has ever had, which reads like the machine was never signed in.
  */
 function hostConfigPath(): string {
-    return platform() === 'darwin'
-        ? join(homedir(), 'Library', 'Application Support', 'unimicro', 'config.json')
-        : join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'unimicro', 'config.json');
+    if (platform() === 'darwin') {
+        return join(homedir(), 'Library', 'Application Support', 'unimicro', 'config.json');
+    }
+
+    if (platform() === 'win32') {
+        const appData = process.env.APPDATA ?? join(homedir(), 'AppData', 'Roaming');
+        return join(appData, 'unimicro', 'config.json');
+    }
+
+    return join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'unimicro', 'config.json');
 }
 
 /**
@@ -66,7 +78,18 @@ function hostConfigPath(): string {
  * sandbox at a time.
  */
 async function readSession(lane = 'test'): Promise<string> {
-    const raw = JSON.parse(await readFile(hostConfigPath(), 'utf8'));
+    const path = hostConfigPath();
+
+    let text: string;
+    try {
+        text = await readFile(path, 'utf8');
+    } catch {
+        // Naming the path matters: the interesting failure is not "no session" but "looked in the
+        // wrong place for this OS", and only the path distinguishes them.
+        throw new Error(`No Unimicro CLI session file at ${path}. Run \`unimicro login\`.`);
+    }
+
+    const raw = JSON.parse(text);
     const session = raw?.sessions?.[lane];
 
     if (!session?.tokens?.accessToken) {
@@ -80,15 +103,26 @@ async function readSession(lane = 'test'): Promise<string> {
  * Tar the plugin's working tree, excluding what a sandbox neither needs nor should get: installed
  * dependencies (reinstalled fresh — cross-platform node_modules do not travel), build output, git
  * history, and `.unimicro/state.json` (a stale tunnel id and PIDs from this machine).
+ *
+ * Two details here are Windows rules that cost nothing elsewhere, and both fail as a bare
+ * `tar exited 2` during provisioning, which reads like a broken sandbox rather than a path bug:
+ *
+ *   - The member is `basename(dir)`, not a path. A member given as an absolute Windows path has its
+ *     drive stripped by GNU tar ("Removing leading `C:\'") and is then not found at all.
+ *   - The archive streams over stdout instead of via a temp file. GNU tar reads any `-f` argument
+ *     containing a colon as `host:path` and tries to reach a remote tape drive, so a perfectly
+ *     ordinary `C:\Users\…\factory-plugin-*.tar.gz` dies with "Cannot connect to C:". Which `tar`
+ *     is on PATH decides whether that bites — Windows ships bsdtar in System32, but Git for Windows
+ *     ships GNU tar and a shell that puts it first — so do not rely on getting the forgiving one.
+ *     Streaming has no filename to misparse and never touches disk.
  */
 async function tarPlugin(dir: string): Promise<Buffer> {
-    const archive = join(tmpdir(), `factory-plugin-${randomUUID()}.tar.gz`);
-    await new Promise<void>((resolve, reject) => {
+    return await new Promise<Buffer>((resolve, reject) => {
         const tar = spawn(
             'tar',
             [
                 '-czf',
-                archive,
+                '-',
                 '--exclude=node_modules',
                 '--exclude=dist',
                 '--exclude=.git',
@@ -97,23 +131,26 @@ async function tarPlugin(dir: string): Promise<Buffer> {
                 // Finder but real files on disk. Untarred inside the sandbox, `._index.test.tsx`
                 // is a file vitest's glob matches — a phantom test suite that fails on nothing the
                 // agent wrote. COPYFILE_DISABLE is the documented way to stop tar writing them; it
-                // is a no-op, not an error, on a sandbox host that already has no such thing.
+                // is a no-op, not an error, on a host that already has no such thing.
                 '--exclude=._*',
                 '-C',
                 dirname(dir),
-                join(dir).split('/').pop()!,
+                basename(dir),
             ],
             { env: { ...process.env, COPYFILE_DISABLE: '1' } },
         );
-        tar.on('error', reject);
-        tar.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`tar exited ${code}`))));
-    });
 
-    try {
-        return await readFile(archive);
-    } finally {
-        await rm(archive, { force: true });
-    }
+        const chunks: Buffer[] = [];
+        let stderr = '';
+
+        tar.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
+        tar.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
+        tar.on('error', reject);
+        tar.on('close', (code) => {
+            if (code === 0) return resolve(Buffer.concat(chunks));
+            reject(new Error(`tar exited ${code}: ${stderr.trim().slice(-500)}`));
+        });
+    });
 }
 
 export class VercelRunner implements Runner {

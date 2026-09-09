@@ -68,3 +68,80 @@ export async function sendMessage(
     });
     if (!res.ok) throw new Error(`orchestrator returned ${res.status}`);
 }
+
+/** What `GET /api/sessions/:id` returns, so a view that reloads can paint before its stream opens. */
+export type SessionSnapshot = {
+    sessionId: string;
+    state: SessionState;
+    pluginId: string;
+    previewUrl: string | null;
+    events: FactoryEvent[];
+};
+
+/** `null` for a session the orchestrator has already let go of — an answer, not a failure. */
+export async function getSnapshot(
+    id: string,
+    signal: AbortSignal,
+): Promise<SessionSnapshot | null> {
+    const res = await fetch(`${base()}/api/sessions/${id}`, { signal });
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error(`orchestrator returned ${res.status}`);
+
+    const body = (await res.json()) as SessionSnapshot;
+    // A body that is not a snapshot is not a session worth resuming. Answered the same way as a
+    // 404 so the caller has one branch — resume this, or start something new — and a stored id
+    // that leads somewhere unexpected costs a new session rather than the whole view.
+    if (typeof body?.sessionId !== 'string' || !Array.isArray(body.events)) return null;
+    return body;
+}
+
+/**
+ * Disposes the session and everything it was holding open.
+ *
+ * The signal is optional because the one caller is abandoning this session on purpose: the view is
+ * about to tear down its own AbortController, and a stop cancelled by that never reaches the
+ * server. Harmless if it fails — creating the next session disposes the active one anyway.
+ */
+export async function stopSession(id: string, signal?: AbortSignal): Promise<void> {
+    const res = await fetch(`${base()}/api/sessions/${id}/stop`, { method: 'POST', signal });
+    if (!res.ok) throw new Error(`orchestrator returned ${res.status}`);
+}
+
+/**
+ * Enough to pick a session back up after a reload.
+ *
+ * The id is the orchestrator's; the other two are the view's own, because nothing on the wire
+ * carries them — the request text is never echoed back in the event stream, and the start of the
+ * turn is only knowable to whoever sent it. Same caveat as `base()`: this is the *platform's*
+ * origin storage, so the key is namespaced, and sessionStorage rather than localStorage because a
+ * session outlives a reload but never the tab.
+ */
+export type Resumable = { id: string; request: string | null; startedAt: number | null };
+
+const RESUME_KEY = 'plugin-factory:session';
+
+export function remembered(): Resumable | null {
+    try {
+        const raw = sessionStorage.getItem(RESUME_KEY);
+        const saved = raw ? (JSON.parse(raw) as Resumable) : null;
+        return saved && typeof saved.id === 'string' ? saved : null;
+    } catch {
+        return null;
+    }
+}
+
+export function remember(saved: Resumable): void {
+    try {
+        sessionStorage.setItem(RESUME_KEY, JSON.stringify(saved));
+    } catch {
+        // Storage can be denied outright. Losing resume is not worth losing the view.
+    }
+}
+
+export function forget(): void {
+    try {
+        sessionStorage.removeItem(RESUME_KEY);
+    } catch {
+        // As above.
+    }
+}

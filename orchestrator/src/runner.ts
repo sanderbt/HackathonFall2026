@@ -48,6 +48,17 @@ export interface Runner {
     dispose(): Promise<void>;
 }
 
+/**
+ * Windows needs a shell for `unimicro` and `npm`.
+ *
+ * Both are installed as `.cmd` shims, and since the fix for CVE-2024-27980 Node refuses to spawn a
+ * batch file unless a shell is asked for — reported as a bare `spawn unimicro ENOENT`, which reads
+ * like a missing install rather than a platform rule. Every argv reaching these two is a literal, so
+ * the escaping `shell: true` gives up buys nothing: the one piece of user prose in this file already
+ * travels as a temp FILE for exactly that reason. `node` is a real executable and stays unshelled.
+ */
+const WIN = process.platform === 'win32';
+
 /** The four gates, in the only order that works. */
 const VERIFY_STEPS: ReadonlyArray<readonly [VerifyStep, string, string[]]> = [
     ['check', 'npm', ['run', 'check']],
@@ -63,7 +74,7 @@ function run(
     cwd: string,
 ): Promise<{ code: number; output: string }> {
     return new Promise((resolve) => {
-        const child = spawn(cmd, args, { cwd, env: process.env });
+        const child = spawn(cmd, args, { cwd, env: process.env, shell: WIN });
         let output = '';
 
         const collect = (chunk: Buffer) => {
@@ -120,7 +131,7 @@ export class LocalRunner implements Runner {
             const child = spawn(
                 'unimicro',
                 ['plugin', 'dev', '--json', '--no-open', '--no-input'],
-                { cwd: this.target.dir, env: process.env },
+                { cwd: this.target.dir, env: process.env, shell: WIN },
             );
             this.dev = child;
 
@@ -233,9 +244,33 @@ export class LocalRunner implements Runner {
         return results;
     }
 
+    /**
+     * Stop the dev loop — and on Windows, stop what it actually spawned.
+     *
+     * `shell: WIN` above means the child is `cmd.exe`, and killing a shell on Windows does not take
+     * its children with it: there are no process groups and no signals, so `kill('SIGTERM')` closes
+     * the shell and leaves `unimicro plugin dev` holding the dev port and the tunnel. Nothing
+     * complains at the time; the next session's `startDev` fails on a port already in use, one
+     * layer away from the cause. `taskkill /T` walks the tree, `/F` because a live tunnel does not
+     * exit on request.
+     */
     async dispose(): Promise<void> {
-        this.dev?.kill('SIGTERM');
+        const child = this.dev;
         this.dev = null;
+        if (!child) return;
+
+        if (WIN && child.pid !== undefined) {
+            await new Promise<void>((done) => {
+                const kill = spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], {
+                    stdio: 'ignore',
+                });
+                kill.on('error', () => done());
+                kill.on('close', () => done());
+            });
+            return;
+        }
+
+        child.kill('SIGTERM');
     }
 }
 

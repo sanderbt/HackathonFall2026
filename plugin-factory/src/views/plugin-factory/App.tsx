@@ -1,10 +1,15 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { HostError } from '@unimicro/plugin-types';
 import type { ViewProps } from '#lib/react-view';
 import {
     base,
     createSession,
+    forget,
+    getSnapshot,
+    remember,
+    remembered,
     sendMessage,
+    stopSession,
     type FactoryEvent,
     type SessionState,
 } from '#lib/orchestrator';
@@ -14,28 +19,68 @@ function isHostError(error: unknown): error is HostError {
     return error instanceof Error && 'code' in error;
 }
 
-/** One row in the transcript. Deliberately flat — this is a prototype, not a chat framework. */
-type Item =
-    | { kind: 'user'; text: string }
-    | { kind: 'assistant'; text: string }
-    | { kind: 'note'; text: string }
-    | { kind: 'gate'; step: string; ok: boolean }
-    | { kind: 'error'; text: string }
-    | { kind: 'ready'; url: string };
+/**
+ * The four things a person waiting on this actually wants to know: where in the process we are,
+ * that it is still moving, roughly how long it has been, and where the result is.
+ *
+ * Everything the agent narrates about itself — tool calls, skill reads, gate output — is progress
+ * *evidence*, not progress *information*. It is collected (see `log`) and kept behind a disclosure
+ * for whoever is debugging the factory, and it drives the liveness beat, but it is never the thing
+ * on screen.
+ */
+type Phase = 'prepare' | 'build' | 'check' | 'done';
 
-/** A runaway loop must not put tens of thousands of nodes in the platform's page. */
-const MAX_ITEMS = 300;
+const PHASE_OF: Record<SessionState, Phase | null> = {
+    created: 'prepare',
+    provisioning: 'prepare',
+    'dev-starting': 'prepare',
+    live: null,
+    working: 'build',
+    verifying: 'check',
+    updated: 'done',
+    failed: null,
+    closed: null,
+};
 
-const STATUS: Record<SessionState, string> = {
-    created: 'Starting up…',
-    provisioning: 'Setting up your workspace…',
-    'dev-starting': 'Connecting to your test company…',
-    live: 'Ready — tell me what you want to build.',
-    working: 'Writing the code…',
-    verifying: 'Checking it compiles, passes tests and validates…',
-    updated: 'Done. Refresh your plugin tab to see it.',
-    failed: 'That did not work.',
-    closed: 'Session closed.',
+const STEPS: { phase: Phase; name: string }[] = [
+    { phase: 'prepare', name: 'Getting ready' },
+    { phase: 'build', name: 'Building' },
+    { phase: 'check', name: 'Checking' },
+    { phase: 'done', name: 'Ready' },
+];
+
+/**
+ * What to say while waiting.
+ *
+ * These rotate on a timer *and* advance whenever the agent reports having done something, so the
+ * line moves for two independent reasons — which means a line that stops moving really has
+ * stopped. They are vague on purpose: an honest "still working on it" beats a precise claim the
+ * backend cannot back up.
+ */
+const CHATTER: Record<Phase, string[]> = {
+    prepare: [
+        'Waking up the workshop…',
+        'Unfolding the workbench…',
+        'Plugging in the cables…',
+        'Borrowing a test company…',
+        'Laying out the tools…',
+    ],
+    build: [
+        'Sketching the layout…',
+        'Writing the code…',
+        'Fitting the pieces together…',
+        'Fidgeting with the details…',
+        'Naming things — the hard part…',
+        'Tightening a few screws…',
+        'Wiring it up to your data…',
+    ],
+    check: [
+        'Reading it back, twice…',
+        'Poking it to see if it wobbles…',
+        'Trying every button…',
+        'Checking the corners…',
+    ],
+    done: ['All done.'],
 };
 
 const SUGGESTIONS = [
@@ -44,20 +89,68 @@ const SUGGESTIONS = [
     'Add a page that counts orders by status',
 ];
 
+/** The disclosure is fixed-height and scrolls inside itself, but there is no reason to keep more. */
+const MAX_LOG = 60;
+
+/** How long a build may run before the view stops calling it normal and offers a way out. */
+const SLOW_AFTER = 180;
+
+function clock(seconds: number): string {
+    return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+}
+
 export default function App({ host }: ViewProps) {
-    const [items, setItems] = useState<Item[]>([]);
     const [state, setState] = useState<SessionState>('created');
+    const [request, setRequest] = useState<string | null>(null);
+    const [summary, setSummary] = useState<string | null>(null);
+    const [error, setError] = useState<string | null>(null);
+    const [log, setLog] = useState<string[]>([]);
     const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-    const [offline, setOffline] = useState(false);
     const [sessionId, setSessionId] = useState<string | null>(null);
+
+    // Two different failures. `offline` is a stream that dropped and is retrying itself, with the
+    // session still running behind it; `unreachable` is never having got a session at all, which
+    // nothing recovers from on its own and so needs a button.
+    const [offline, setOffline] = useState(false);
+    const [unreachable, setUnreachable] = useState(false);
+
+    // Bumped to start a session over. The effect below owns every session; this is how anything
+    // outside it asks for a new one.
+    const [attempt, setAttempt] = useState(0);
+
+    // Bumped by the timer and by every sign of life from the agent. Both feed one counter, so the
+    // waiting message advances on whichever happens first.
+    const [beat, setBeat] = useState(0);
+    const [startedAt, setStartedAt] = useState<number | null>(null);
+    const [elapsed, setElapsed] = useState(0);
 
     const abortRef = useRef<AbortController | null>(null);
     const composer = useRef<(HTMLElement & { value: string }) | null>(null);
-    const scroller = useRef<HTMLDivElement | null>(null);
 
-    const push = useCallback((item: Item) => {
-        setItems((prev) => [...prev, item].slice(-MAX_ITEMS));
+    // The state the last event carried, readable synchronously. An event handler has to compare the
+    // phase it is leaving with the one it is entering, and `state` is always a render behind.
+    const stateRef = useRef<SessionState>('created');
+    // The highest sequence number already applied. Events are not idempotent — see `onmessage`.
+    const seqRef = useRef(0);
+    // Held in a ref rather than in the effect's dependencies: a fresh `host` identity from the
+    // platform must not be able to tear down the stream and start a second session on top of a
+    // build that is still running.
+    const hostRef = useRef(host);
+    useEffect(() => {
+        hostRef.current = host;
+    }, [host]);
+
+    const record = useCallback((text: string) => {
+        setLog((prev) => [...prev, text].slice(-MAX_LOG));
     }, []);
+
+    const note = useCallback(
+        (text: string) => {
+            setBeat((b) => b + 1);
+            record(text);
+        },
+        [record],
+    );
 
     useEffect(() => {
         const abort = new AbortController();
@@ -66,53 +159,133 @@ export default function App({ host }: ViewProps) {
         let source: EventSource | null = null;
         let stopped = false;
 
+        /**
+         * One event, one place.
+         *
+         * Replaying a session's history and reading its live stream have to leave the view in the
+         * same state, so both go through here. `live` separates out the two things that must not
+         * happen twice: a toast, and a notification about a failure the user has already seen.
+         */
+        const apply = (event: FactoryEvent, live: boolean) => {
+            switch (event.type) {
+                case 'session.state': {
+                    const moved = PHASE_OF[stateRef.current] !== PHASE_OF[event.state];
+                    stateRef.current = event.state;
+                    setState(event.state);
+                    if (event.state === 'working') {
+                        setSummary(null);
+                        // A new turn is not the place to still be showing the last one's failure.
+                        setError(null);
+                    }
+                    const line = event.detail ? `${event.state}: ${event.detail}` : event.state;
+                    // A phase change restarts that phase's own list of waiting lines. Carrying the
+                    // count across would open a phase on whichever line the last one left off at.
+                    if (moved) {
+                        setBeat(0);
+                        record(line);
+                    } else {
+                        note(line);
+                    }
+                    break;
+                }
+                case 'agent.text':
+                    // Kept, not shown while it streams: mid-turn narration is the agent thinking
+                    // out loud. The last one describes what was built.
+                    setSummary(event.text);
+                    note(event.text);
+                    break;
+                case 'agent.skill':
+                    note(`skill: ${event.skill}`);
+                    break;
+                case 'agent.tool':
+                    note(`${event.name} ${event.summary}`);
+                    break;
+                case 'verify.step':
+                    note(`${event.ok ? 'ok' : 'failed'}: ${event.step}`);
+                    break;
+                case 'dev.event':
+                    // Never on screen, but often the only thing that explains a preview which
+                    // never came up — so it belongs in the log rather than dropped on the floor.
+                    note(`dev: ${event.event}`);
+                    break;
+                case 'preview.ready':
+                    setPreviewUrl(event.url);
+                    note(`preview: ${event.url}`);
+                    break;
+                case 'error':
+                    setError(event.message);
+                    note(`error: ${event.message}`);
+                    if (event.fatal && live) {
+                        hostRef.current.notifications.error('The plugin factory failed');
+                    }
+                    break;
+                case 'turn.done':
+                    if (live) {
+                        hostRef.current.notifications.success('Your plugin has been updated');
+                    }
+                    break;
+            }
+        };
+
         void (async () => {
             try {
-                const id = await createSession(abort.signal);
-                if (stopped) return;
+                const saved = remembered();
+                let id: string | null = null;
+
+                if (saved) {
+                    // A reload used to abandon the running build and start a second one. The
+                    // orchestrator still holds the session and its whole history, so ask for it
+                    // back before asking for a new one.
+                    const snapshot = await getSnapshot(saved.id, abort.signal);
+                    if (stopped) return;
+
+                    if (snapshot) {
+                        id = snapshot.sessionId;
+                        setPreviewUrl(snapshot.previewUrl);
+                        // Neither of these is on the wire, so they can only come back from here.
+                        setRequest(saved.request);
+                        setStartedAt(saved.startedAt);
+
+                        for (const event of snapshot.events) apply(event, false);
+                        seqRef.current = snapshot.events.at(-1)?.seq ?? 0;
+                        // The snapshot's own state wins over whatever the replay computed.
+                        stateRef.current = snapshot.state;
+                        setState(snapshot.state);
+                    } else {
+                        forget();
+                    }
+                }
+
+                if (!id) {
+                    id = await createSession(abort.signal);
+                    if (stopped) return;
+                    remember({ id, request: null, startedAt: null });
+                }
+
                 setSessionId(id);
+                setUnreachable(false);
                 setOffline(false);
 
-                source = new EventSource(`${base()}/api/sessions/${id}/events`);
+                // Resuming asks for the gap only: the replayed history is already on screen.
+                const from = seqRef.current;
+                source = new EventSource(
+                    `${base()}/api/sessions/${id}/events${from ? `?lastEventId=${from}` : ''}`,
+                );
                 source.onopen = () => setOffline(false);
                 // EventSource retries on its own; this only reflects that it is currently down.
                 source.onerror = () => setOffline(true);
 
                 source.onmessage = (message) => {
                     const event = JSON.parse(message.data) as FactoryEvent;
-
-                    switch (event.type) {
-                        case 'session.state':
-                            setState(event.state);
-                            if (event.detail) push({ kind: 'note', text: event.detail });
-                            break;
-                        case 'agent.text':
-                            push({ kind: 'assistant', text: event.text });
-                            break;
-                        case 'agent.skill':
-                            push({ kind: 'note', text: `Reading the ${event.skill} documentation` });
-                            break;
-                        case 'agent.tool':
-                            push({ kind: 'note', text: `${event.name} ${event.summary}` });
-                            break;
-                        case 'verify.step':
-                            push({ kind: 'gate', step: event.step, ok: event.ok });
-                            break;
-                        case 'preview.ready':
-                            setPreviewUrl(event.url);
-                            push({ kind: 'ready', url: event.url });
-                            break;
-                        case 'error':
-                            push({ kind: 'error', text: event.message });
-                            if (event.fatal) host.notifications.error('The plugin factory failed');
-                            break;
-                        case 'turn.done':
-                            host.notifications.success('Your plugin has been updated');
-                            break;
-                    }
+                    // A reconnect replays from the last id the browser saw, which overlaps with
+                    // what is already applied. Without this the log doubles on every reconnect and
+                    // the liveness beat jumps several lines at once.
+                    if (event.seq <= seqRef.current) return;
+                    seqRef.current = event.seq;
+                    apply(event, true);
                 };
-            } catch (error) {
-                if (!stopped) setOffline(true);
+            } catch {
+                if (!stopped) setUnreachable(true);
             }
         })();
 
@@ -124,31 +297,111 @@ export default function App({ host }: ViewProps) {
             abort.abort();
             source?.close();
         };
-    }, [host, push]);
+    }, [attempt, note, record]);
 
-    // Follow the tail only when the reader is already at the bottom, so reading history is not
-    // yanked away mid-stream.
-    useLayoutEffect(() => {
-        const el = scroller.current;
-        if (!el) return;
-        if (el.scrollHeight - el.scrollTop - el.clientHeight < 120) el.scrollTop = el.scrollHeight;
-    }, [items]);
+    /** Everything a new session must not inherit from the one before it. */
+    const reset = useCallback(() => {
+        stateRef.current = 'created';
+        seqRef.current = 0;
+        setState('created');
+        setSessionId(null);
+        setRequest(null);
+        setSummary(null);
+        setError(null);
+        setLog([]);
+        setPreviewUrl(null);
+        setBeat(0);
+        setStartedAt(null);
+        setElapsed(0);
+        setOffline(false);
+        setUnreachable(false);
+        setAttempt((a) => a + 1);
+    }, []);
 
-    const busy = state === 'working' || state === 'verifying';
+    const retry = useCallback(() => {
+        // A session that was never reached cannot be resumed. Drop the record so the retry asks for
+        // a new one instead of chasing an id the orchestrator may never have had.
+        forget();
+        reset();
+    }, [reset]);
+
+    const startOver = useCallback(() => {
+        const id = sessionId;
+        forget();
+        // Fire and forget, and unsignalled on purpose: `reset` aborts the controller this view has
+        // been using, which would cancel the stop before it left. Failing costs nothing either —
+        // the orchestrator disposes the active session when it creates the next one.
+        if (id) void stopSession(id).catch(() => {});
+        reset();
+    }, [reset, sessionId]);
+
+    const phase = PHASE_OF[state];
+    const working = phase === 'build' || phase === 'check';
+    const starting = phase === 'prepare';
+    const waiting = working || starting;
+    const ready = phase === 'done';
+
+    // The visible proof that nothing has stalled. Runs only while something is in flight, so an
+    // idle view holds no timers.
+    useEffect(() => {
+        if (!waiting) return;
+        const id = setInterval(() => setBeat((b) => b + 1), 3200);
+        return () => clearInterval(id);
+    }, [waiting]);
+
+    useEffect(() => {
+        if (!working) {
+            setStartedAt(null);
+            setElapsed(0);
+            return;
+        }
+        // A resumed build brings its own start time with it; only a fresh one starts the clock.
+        setStartedAt((at) => at ?? Date.now());
+    }, [working]);
+
+    useEffect(() => {
+        if (!working || startedAt === null) return;
+        const tick = () => setElapsed(Math.round((Date.now() - startedAt) / 1000));
+        tick();
+        const id = setInterval(tick, 1000);
+        return () => clearInterval(id);
+    }, [working, startedAt]);
+
+    const chatter = CHATTER[phase ?? 'build'];
+    const message = offline
+        ? 'Lost contact with the workshop — reconnecting…'
+        : chatter[beat % chatter.length];
+    const slow = working && elapsed >= SLOW_AFTER;
 
     const submit = useCallback(
         (text?: string) => {
             const value = (text ?? composer.current?.value ?? '').trim();
-            if (!value || !sessionId || busy) return;
+            const signal = abortRef.current?.signal;
+            if (!value || !sessionId || !signal || waiting) return;
             if (composer.current && !text) composer.current.value = '';
 
-            push({ kind: 'user', text: value });
-            void sendMessage(sessionId, value, abortRef.current!.signal).catch((error: unknown) => {
-                if ((error as Error).name === 'AbortError') return; // the view is gone
-                push({ kind: 'error', text: String(error) });
+            const at = Date.now();
+            setRequest(value);
+            setSummary(null);
+            setError(null);
+            setBeat(0);
+            setStartedAt(at);
+            // Optimistic: the state event that confirms it is a round trip away, and a composer
+            // that clears into an unchanged screen reads as a dropped request.
+            stateRef.current = 'working';
+            setState('working');
+            // Written before the request is even accepted, so a reload during the round trip still
+            // finds its way back to the turn it started.
+            remember({ id: sessionId, request: value, startedAt: at });
+
+            void sendMessage(sessionId, value, signal).catch((cause: unknown) => {
+                if ((cause as Error).name === 'AbortError') return; // the view is gone
+                setError(String(cause));
+                stateRef.current = 'failed';
+                setState('failed');
             });
         },
-        [sessionId, busy, push],
+        [sessionId, waiting],
     );
 
     const openPlugin = useCallback(
@@ -158,88 +411,148 @@ export default function App({ host }: ViewProps) {
                 // and this chat is itself served through a tunnel in this one. A new tab picks up
                 // the generated plugin's tunnel without disturbing ours.
                 await host.navigation.openExternal(url);
-            } catch (error) {
-                if (isHostError(error) && error.code === 'host/revoked') return;
-                host.log.error(error, { url });
+            } catch (cause) {
+                if (isHostError(cause) && cause.code === 'host/revoked') return; // the user left
+                // This button is the only way through — the URL used to be printed beside it as a
+                // fallback and is not any more — so a refusal has to be said out loud rather than
+                // logged and forgotten.
+                host.notifications.error('Could not open the plugin');
+                host.log.error(cause, { url });
             }
         },
         [host],
+    );
+
+    const at = phase ? STEPS.findIndex((s) => s.phase === phase) : -1;
+
+    /**
+     * The point of the entire screen once a build lands, so it sits in the stage rather than in a
+     * corner underneath the composer — and present but inert before then, because the URL goes
+     * live the moment the tunnel is up and what it serves until `done` is the plugin as it was.
+     */
+    const open = previewUrl && (
+        <div className={ready ? 'open open--ready' : 'open'}>
+            <uni-button
+                variant={ready ? 'primary' : 'secondary'}
+                small={!ready || undefined}
+                disabled={!ready || undefined}
+                onClick={() => openPlugin(previewUrl)}
+            >
+                Open your plugin
+            </uni-button>
+        </div>
     );
 
     return (
         <section>
             <uni-page-header heading="Plugin Factory" />
 
-            {offline && (
+            {unreachable && (
                 <uni-alert type="critical" header="Cannot reach the plugin factory">
-                    Nothing is answering at {base()}. Start the orchestrator and reload.
+                    Nothing is answering at {base()}. Start the orchestrator, then try again.
+                    <uni-button slot="actions" variant="secondary" small onClick={retry}>
+                        Try again
+                    </uni-button>
                 </uni-alert>
             )}
 
-            <div className="transcript" ref={scroller} role="log">
-                {items.length === 0 && !offline && (
-                    <div className="empty">
-                        <p>Describe the functionality you want, in plain language.</p>
-                        <div className="suggestions">
-                            {SUGGESTIONS.map((s) => (
-                                <uni-button key={s} variant="secondary" small onClick={() => submit(s)}>
-                                    {s}
-                                </uni-button>
-                            ))}
-                        </div>
-                    </div>
-                )}
+            {offline && !unreachable && (
+                <uni-alert type="warning" header="Lost contact with the plugin factory">
+                    Reconnecting. Anything already running carries on without us.
+                </uni-alert>
+            )}
 
-                {items.map((item, i) => {
-                    switch (item.kind) {
-                        case 'user':
-                            return (
-                                <div key={i} className="row user">
-                                    {item.text}
-                                </div>
-                            );
-                        case 'assistant':
-                            return (
-                                <div key={i} className="row assistant">
-                                    {item.text}
-                                </div>
-                            );
-                        case 'note':
-                            return (
-                                <div key={i} className="row note">
-                                    {item.text}
-                                </div>
-                            );
-                        case 'gate':
-                            return (
-                                <div key={i} className="row note">
-                                    {item.ok ? '✓' : '✗'} {item.step}
-                                </div>
-                            );
-                        case 'error':
-                            return (
-                                <uni-alert key={i} type="critical">
-                                    {item.text}
-                                </uni-alert>
-                            );
-                        case 'ready':
-                            return (
-                                <uni-card key={i} class="ready">
-                                    <p>Your plugin is running in this company.</p>
-                                    <uni-button onClick={() => openPlugin(item.url)}>
-                                        Open your plugin
+            {error && (
+                <uni-alert type="critical" header="That did not work">
+                    {error}
+                    <uni-button slot="actions" variant="secondary" small onClick={startOver}>
+                        Start over
+                    </uni-button>
+                </uni-alert>
+            )}
+
+            <div className="stage">
+                <div className="panel">
+                    {working ? (
+                        <div className="wait">
+                            <span className="pulse" aria-hidden="true" />
+                            {/* The region is what has to stay put; only the line inside it is
+                                replaced. Keying the line remounts it, and remounting is what
+                                restarts the animation — a CSS animation does not re-run when an
+                                element's text changes underneath it. */}
+                            <div className="live" aria-live="polite">
+                                <p className="message" key={message}>
+                                    {message}
+                                </p>
+                            </div>
+                            {request && <p className="echo">“{request}”</p>}
+                            <p className="reassure">
+                                <span>
+                                    {slow
+                                        ? 'Longer than usual. It may still land, or you can start again.'
+                                        : 'Still going — this usually takes a minute or two.'}
+                                </span>
+                                {/* Deliberately outside the live region: a value that changes once
+                                    a second inside one makes a screen reader re-read the whole
+                                    block once a second. */}
+                                <span aria-hidden="true">{clock(elapsed)}</span>
+                            </p>
+                            {slow && (
+                                <uni-button variant="tertiary" small onClick={startOver}>
+                                    Stop and start over
+                                </uni-button>
+                            )}
+                        </div>
+                    ) : ready ? (
+                        <div className="wait">
+                            <span className="tick" aria-hidden="true">
+                                ✓
+                            </span>
+                            <div className="live" aria-live="polite">
+                                <p className="message">Your plugin is ready</p>
+                            </div>
+                            {summary && <p className="summary">{summary}</p>}
+                            <p className="reassure">Ask for another change below whenever you like.</p>
+                        </div>
+                    ) : (
+                        <div className="intro">
+                            <h2>What should your plugin do?</h2>
+                            <p>Describe the functionality you want, in plain language.</p>
+                            <div className="suggestions">
+                                {SUGGESTIONS.map((s) => (
+                                    <uni-button
+                                        key={s}
+                                        variant="secondary"
+                                        small
+                                        disabled={waiting || !sessionId || undefined}
+                                        onClick={() => submit(s)}
+                                    >
+                                        {s}
                                     </uni-button>
-                                    <p className="url">{item.url}</p>
-                                </uni-card>
-                            );
-                    }
-                })}
+                                ))}
+                            </div>
+                            {starting && (
+                                <p className="reassure" aria-live="polite">
+                                    <span className="dots" aria-hidden="true" />
+                                    {message} Ready for your first request in a moment.
+                                </p>
+                            )}
+                        </div>
+                    )}
+                    {open}
+                </div>
             </div>
 
-            <p className="status" aria-live="polite">
-                {busy && <span className="dots" aria-hidden="true" />}
-                {STATUS[state]}
-            </p>
+            <uni-stepper horizontal class="rail">
+                {STEPS.map(({ phase: step, name }, i) => (
+                    <uni-step
+                        key={step}
+                        name={name}
+                        active={(i === at && phase !== 'done') || undefined}
+                        completed={(at >= 0 && (i < at || phase === 'done')) || undefined}
+                    />
+                ))}
+            </uni-stepper>
 
             <div
                 className="composer"
@@ -255,17 +568,22 @@ export default function App({ host }: ViewProps) {
                     label="Describe the plugin you want"
                     label-hidden
                     resize="auto"
-                    placeholder="A page that lists overdue invoices…"
+                    readonly={waiting || undefined}
+                    placeholder={waiting ? 'Working on it…' : 'A page that lists overdue invoices…'}
                 />
-                <uni-button loading={busy} onClick={() => submit()}>
+                <uni-button
+                    loading={working || undefined}
+                    disabled={waiting || undefined}
+                    onClick={() => submit()}
+                >
                     Send
                 </uni-button>
             </div>
 
-            {previewUrl && !items.some((i) => i.kind === 'ready') && (
-                <uni-button variant="secondary" small onClick={() => openPlugin(previewUrl)}>
-                    Open your plugin
-                </uni-button>
+            {log.length > 0 && (
+                <uni-expansion-panel header="Technical details" max-height="9rem" class="log">
+                    <pre>{log.join('\n')}</pre>
+                </uni-expansion-panel>
             )}
         </section>
     );

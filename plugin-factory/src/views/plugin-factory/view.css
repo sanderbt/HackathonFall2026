@@ -2,62 +2,68 @@
    Selector-based rules from the platform's stylesheets do not. */
 :host {
     display: block;
+    height: 100%;
 }
 
 .view {
     color: var(--text-default);
-    font-family: var(--font-family);
+    /* `--font-family` is set by the design system's base theme and inherits in like any other
+       token, but it is not in the published token list — so it is used with a fallback rather than
+       relied on. Inheriting the host page's font is the right answer when it is absent. */
+    font-family: var(--font-family, inherit);
+    height: 100%;
 }
 
+/* One screen, no page scroll. Nothing here grows with the number of events, which is what made the
+   old view scroll. */
 section {
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
-    padding: 1.5rem;
-    max-width: 56rem;
+    gap: 1.25rem;
+    padding: 1.5rem 2rem 2rem;
+    max-width: 60rem;
     margin: 0 auto;
     height: 100%;
     box-sizing: border-box;
+    overflow: hidden;
 }
 
-.transcript {
+/* Takes all the leftover height, which is what puts the composer and the rail at the bottom of the
+   frame and the hero in the middle of what is left. Capping it instead leaves two pools of empty
+   space — one inside this box, one under the composer — and reads as a small view in a big window. */
+.stage {
     flex: 1;
-    min-height: 18rem;
-    overflow-y: auto;
+    min-height: 12rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    overflow: hidden;
+}
+
+/* Holds whichever of the three states is showing, plus the link to the result — which outlives all
+   three and so cannot live inside any of them. */
+.panel {
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    align-items: center;
+    gap: 1rem;
+    width: 100%;
+    min-width: 0;
 }
 
-.row {
-    padding: 0.6rem 0.85rem;
-    border-radius: 0.5rem;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
+/* Same size and weight as `.message`: the question and the progress line are the same rung of the
+   hierarchy, one per state, and an `h2`'s default bold would make this one shout by comparison. */
+.intro h2 {
+    margin: 0 0 0.25rem;
+    font-weight: 500;
+    font-size: 1.5rem;
+    line-height: 1.4;
 }
 
-.row.user {
-    align-self: flex-end;
-    max-width: 80%;
-    background: var(--surface-selected, rgba(0, 0, 0, 0.06));
-}
-
-.row.assistant {
-    align-self: flex-start;
-    max-width: 90%;
-}
-
-/* Tool calls, skill reads and gate results. Present but quiet — they are texture, not content. */
-.row.note {
-    padding: 0.15rem 0.85rem;
-    font-size: 0.8125rem;
-    color: var(--text-subdued, #666);
-    font-family: ui-monospace, monospace;
-}
-
-.empty {
-    margin: auto;
-    text-align: center;
+/* `:not` so this does not also flatten `.reassure`'s top margin, which it outranks on specificity. */
+.intro p:not(.reassure) {
+    margin: 0;
     color: var(--text-subdued, #666);
 }
 
@@ -66,49 +72,170 @@ section {
     flex-wrap: wrap;
     gap: 0.5rem;
     justify-content: center;
-    margin-top: 0.75rem;
+    margin-top: 1rem;
 }
 
-.ready .url {
-    font-family: ui-monospace, monospace;
-    font-size: 0.75rem;
-    color: var(--text-subdued, #666);
-    /* Selectable on purpose: openExternal runs after an async host hop, so it is not in a
-       user-gesture stack and a popup blocker will eat it at least once. */
-    user-select: all;
-    overflow-wrap: anywhere;
-}
-
-.status {
+.wait {
     display: flex;
+    flex-direction: column;
     align-items: center;
     gap: 0.5rem;
+}
+
+.message {
     margin: 0;
-    min-height: 1.25rem;
+    /* 500 at this size is the design system's own heading weight. Without it the headline and the
+       subdued line under it carry the same emphasis and neither leads. */
+    font-weight: 500;
+    font-size: 1.5rem;
+    line-height: 1.4;
+    /* The line is replaced wholesale every few seconds; fading it in makes the swap read as
+       progress rather than as a glitch. */
+    animation: appear 0.4s ease-out;
+}
+
+.echo,
+.summary {
+    margin: 0;
+    max-width: 38rem;
+    color: var(--text-subdued, #666);
+    /* Neither of these may be allowed to set the height of the view. */
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    overflow: hidden;
+}
+
+.echo {
+    font-style: italic;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+}
+
+.reassure {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    margin: 0.5rem 0 0;
     font-size: 0.875rem;
     color: var(--text-subdued, #666);
+}
+
+.tick {
+    font-size: 2rem;
+    line-height: 1;
+    color: var(--icon-success, #50b46f);
+}
+
+/* The design system ships no spinner — only a `loading` attribute on buttons — so the waiting
+   indicator is ours to build. Two rings, offset, so there is always something moving, over a solid
+   core that never fades: both rings spend most of their cycle near zero opacity, and an indicator
+   caught at that moment is an empty grey circle, which reads as stopped rather than as busy. */
+.pulse {
+    position: relative;
+    width: 3rem;
+    height: 3rem;
+    background: radial-gradient(circle 4px at 50% 50%, currentColor 99%, transparent);
+}
+
+.pulse::before,
+.pulse::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    border: 2px solid currentColor;
+    animation: ripple 1.8s ease-out infinite;
+}
+
+.pulse::after {
+    animation-delay: 0.9s;
+}
+
+.dots {
+    width: 1.5rem;
+    height: 0.5rem;
+    flex: none;
+    background:
+        radial-gradient(circle 2px at 3px 50%, currentColor 99%, transparent) 0 0 / 8px 100%
+            no-repeat,
+        radial-gradient(circle 2px at 3px 50%, currentColor 99%, transparent) 8px 0 / 8px 100%
+            no-repeat,
+        radial-gradient(circle 2px at 3px 50%, currentColor 99%, transparent) 16px 0 / 8px 100%
+            no-repeat;
+    animation: pulse 1.2s infinite steps(1);
+}
+
+.rail {
+    flex: none;
 }
 
 .composer {
     display: flex;
     gap: 0.5rem;
     align-items: flex-end;
+    flex: none;
 }
 
 .composer uni-textarea {
     flex: 1;
 }
 
-/* The design system ships no spinner — only a `loading` attribute on buttons — so the streaming
-   indicator is ours to build. */
-.dots {
-    width: 1.5rem;
-    height: 0.5rem;
-    background:
-        radial-gradient(circle 2px at 3px 50%, currentColor 99%, transparent) 0 0 / 8px 100% no-repeat,
-        radial-gradient(circle 2px at 3px 50%, currentColor 99%, transparent) 8px 0 / 8px 100% no-repeat,
-        radial-gradient(circle 2px at 3px 50%, currentColor 99%, transparent) 16px 0 / 8px 100% no-repeat;
-    animation: pulse 1.2s infinite steps(1);
+/* Inert and out of the way until the build lands. */
+.open {
+    display: flex;
+    justify-content: center;
+    flex: none;
+    max-width: 100%;
+}
+
+/* Then it becomes the point of the screen: given its own room, and the only primary button on it.
+   Nothing else here competes for the eye. */
+.open--ready {
+    margin-top: 0.5rem;
+}
+
+/* Everything the agent says about itself lives here: opt-in, capped, and scrolling inside its own
+   box so opening it can never make the view itself scroll. */
+.log {
+    flex: none;
+    /* The panel sizes itself narrower than the column it sits in, which left the bottom edge of the
+       view ragged against the composer above it. */
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.log pre {
+    margin: 0;
+    font-size: 0.75rem;
+    line-height: 1.5;
+    color: var(--text-subdued, #666);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+@keyframes appear {
+    from {
+        opacity: 0;
+        transform: translateY(0.25rem);
+    }
+}
+
+@keyframes ripple {
+    from {
+        transform: scale(0.3);
+        opacity: 0.9;
+    }
+    /* Holds the ring visible through most of its travel instead of fading out immediately. */
+    60% {
+        opacity: 0.45;
+    }
+    to {
+        transform: scale(1);
+        opacity: 0;
+    }
 }
 
 @keyframes pulse {
@@ -120,5 +247,19 @@ section {
     }
     66% {
         opacity: 1;
+    }
+}
+
+/* Three animations run at once here; honour the setting that asks for none of them. */
+@media (prefers-reduced-motion: reduce) {
+    .message,
+    .pulse::before,
+    .pulse::after,
+    .dots {
+        animation: none;
+    }
+
+    .pulse::before {
+        opacity: 0.5;
     }
 }
