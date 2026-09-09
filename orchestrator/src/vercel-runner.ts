@@ -307,7 +307,13 @@ export class VercelRunner implements Runner {
      * spawned on this machine. The prompt goes in as a file for the same reason it does locally —
      * user prose through a shell argument is a quoting accident waiting to happen.
      */
-    async runTurn(bus: EventBus, prompt: string, resume: string | undefined): Promise<TurnResult> {
+    async runTurn(
+        bus: EventBus,
+        prompt: string,
+        resume: string | undefined,
+        model: string | undefined,
+        effort: string | undefined,
+    ): Promise<TurnResult> {
         const sandbox = this.sandbox;
         if (!sandbox) throw new Error('reset() must run before runTurn()');
 
@@ -316,6 +322,8 @@ export class VercelRunner implements Runner {
 
         const args = ['run.mjs', '--prompt-file', promptPath, '--cwd', PLUGIN_DIR];
         if (resume) args.push('--resume', resume);
+        if (model) args.push('--model', model);
+        if (effort) args.push('--effort', effort);
 
         const turn = await sandbox.runCommand({
             cmd: 'node',

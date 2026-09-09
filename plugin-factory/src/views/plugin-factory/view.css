@@ -259,6 +259,28 @@ section > uni-alert {
     flex: none;
 }
 
+/* Left-aligned, like the textarea below it — the column centres everything else, but a field's
+   own label reads naturally only flush with its control, not floating in the middle of the row.
+   Model and effort sit in one row rather than stacked: neither is worth a row of its own, and
+   side by side reads as "settings for this turn" instead of two separate questions. */
+.composer__settings {
+    display: flex;
+    align-items: center;
+    gap: var(--s3);
+    align-self: flex-start;
+}
+
+.composer__setting {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.composer__setting-label {
+    font-size: 0.75rem;
+    color: var(--text-subdued, #666);
+}
+
 .composer uni-textarea {
     width: 100%;
     /* The field's own label and validation copy are left-aligned by the design system; the

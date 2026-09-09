@@ -8,6 +8,7 @@
  * one ran — they only ever see the NDJSON this script prints.
  *
  * Usage: node run.mjs --prompt-file <path> --cwd <plugin-dir> [--resume <sdk-session-id>]
+ *   [--model <model-id>] [--effort <low|medium|high|xhigh|max>]
  *
  * The prompt arrives as a FILE, never as an argv string — user prose through a shell argument is a
  * quoting accident waiting to happen, and this runs the same way locally and in a sandbox either
@@ -140,9 +141,13 @@ async function main() {
             // agent writes confident code against an API it has invented.
             settingSources: ['project'],
             skills: 'all',
-            // Haiku over Sonnet's default: this harness is tool-calling + skill-reading, not
-            // creative writing, and Haiku is a fraction of the cost per token for that shape of work.
-            model: 'claude-haiku-4-5-20251001',
+            // Haiku is the default over Sonnet's own: this harness is tool-calling + skill-reading,
+            // not creative writing, and Haiku is a fraction of the cost per token for that shape of
+            // work. The chat view lets the user override it per turn via --model.
+            model: args.model || 'claude-haiku-4-5-20251001',
+            // Left unset, the SDK's own default ('high') applies. --effort lets the chat view trade
+            // thinking depth for speed per turn, same as --model.
+            effort: args.effort || undefined,
             permissionMode: 'bypassPermissions',
             maxTurns: 80,
             // A thrashing loop with five skills in context gets expensive fast.

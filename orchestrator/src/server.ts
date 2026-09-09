@@ -30,6 +30,24 @@ const TARGET: PluginTarget = {
     pluginId: process.env.FACTORY_PLUGIN_ID ?? 'factory-demo-alfa',
 };
 
+/**
+ * What the chat view is allowed to ask for.
+ *
+ * Kept as a fixed allowlist rather than passing the client's string straight through: the value
+ * ends up as a spawned process's argv, and validating it here means an unrecognised or malformed
+ * value falls back to `run.mjs`'s own default instead of failing the turn.
+ */
+const ALLOWED_MODELS = new Set(['claude-haiku-4-5-20251001', 'claude-sonnet-5', 'claude-opus-5']);
+const ALLOWED_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+
+function normalizeModel(model: unknown): string | undefined {
+    return typeof model === 'string' && ALLOWED_MODELS.has(model) ? model : undefined;
+}
+
+function normalizeEffort(effort: unknown): string | undefined {
+    return typeof effort === 'string' && ALLOWED_EFFORTS.has(effort) ? effort : undefined;
+}
+
 type Session = {
     id: string;
     state: SessionState;
@@ -130,7 +148,12 @@ function repairPrompt(failed: VerifyResult): string {
     ].join('\n');
 }
 
-async function handleTurn(session: Session, text: string): Promise<void> {
+async function handleTurn(
+    session: Session,
+    text: string,
+    model: string | undefined,
+    effort: string | undefined,
+): Promise<void> {
     try {
         if (session.state === 'created') await provision(session);
 
@@ -149,7 +172,13 @@ async function handleTurn(session: Session, text: string): Promise<void> {
                 'working',
                 attempt === 0 ? undefined : `auto-fixing ${failed?.step} (attempt ${attempt}/${MAX_REPAIR_ROUNDS})`,
             );
-            const result = await session.runner.runTurn(session.bus, prompt, session.agentSessionId);
+            const result = await session.runner.runTurn(
+                session.bus,
+                prompt,
+                session.agentSessionId,
+                model,
+                effort,
+            );
             session.agentSessionId = result.sessionId;
             usd += result.usd ?? 0;
             turns += result.turns ?? 0;
@@ -234,12 +263,14 @@ const server = createServer(async (req, res) => {
         }
 
         if (req.method === 'POST' && sub === '/messages') {
-            const { text } = JSON.parse((await readBody(req)) || '{}');
+            const { text, model, effort } = JSON.parse((await readBody(req)) || '{}');
             if (!text?.trim()) return json(res, 400, { error: 'text is required' });
 
             // 202 and get out of the way: everything the user sees arrives on the stream.
             json(res, 202, { accepted: true });
-            session.queue = session.queue.then(() => handleTurn(session, text));
+            session.queue = session.queue.then(() =>
+                handleTurn(session, text, normalizeModel(model), normalizeEffort(effort)),
+            );
             return;
         }
 

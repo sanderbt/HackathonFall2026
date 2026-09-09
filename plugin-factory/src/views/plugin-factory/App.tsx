@@ -4,13 +4,21 @@ import type { ViewProps } from '#lib/react-view';
 import {
     base,
     createSession,
+    EFFORTS,
     forget,
+    getEffort,
+    getModel,
     getSnapshot,
+    MODELS,
     remember,
     remembered,
+    saveEffort,
+    saveModel,
     sendMessage,
     stopSession,
+    type Effort,
     type FactoryEvent,
+    type ModelId,
     type SessionState,
 } from '#lib/orchestrator';
 
@@ -200,6 +208,12 @@ export default function App({ host }: ViewProps) {
     const [log, setLog] = useState<string[]>([]);
     const [previewUrl, setPreviewUrl] = useState<string | null>(null);
     const [sessionId, setSessionId] = useState<string | null>(null);
+
+    // Remembered across reloads, same as the orchestrator override — but per turn, not per
+    // session: it rides along on the next `sendMessage` rather than fixing the session at
+    // creation, so switching models never requires starting over.
+    const [model, setModel] = useState<ModelId>(() => getModel());
+    const [effort, setEffort] = useState<Effort>(() => getEffort());
 
     // Whether there is a plugin to look at yet. Until the first turn lands, the preview URL serves
     // the empty template the session was provisioned from — so having a URL is not the same as
@@ -498,15 +512,25 @@ export default function App({ host }: ViewProps) {
             // finds its way back to the turn it started.
             remember({ id: sessionId, request: value, startedAt: at });
 
-            void sendMessage(sessionId, value, signal).catch((cause: unknown) => {
+            void sendMessage(sessionId, value, model, effort, signal).catch((cause: unknown) => {
                 if ((cause as Error).name === 'AbortError') return; // the view is gone
                 setError(String(cause));
                 stateRef.current = 'failed';
                 setState('failed');
             });
         },
-        [sessionId, waiting],
+        [sessionId, waiting, model, effort],
     );
+
+    const selectModel = useCallback((id: ModelId) => {
+        setModel(id);
+        saveModel(id);
+    }, []);
+
+    const selectEffort = useCallback((id: Effort) => {
+        setEffort(id);
+        saveEffort(id);
+    }, []);
 
     const openPlugin = useCallback(
         async (url: string) => {
@@ -709,6 +733,57 @@ export default function App({ host }: ViewProps) {
                     }
                 }}
             >
+                {/* Apply to the next turn, not the session — the view sends them along with each
+                    request rather than fixing them at session creation, so changing either never
+                    means starting over. Menus, not comboboxes: there is no filtering to do over a
+                    handful of fixed options, and a text field invites typing one that does not
+                    exist. `tertiary xs` keeps both to the size of a label, not a form control — this
+                    is a quiet per-turn setting, not an action competing with Send. Disabled rather
+                    than merely inert while a turn runs, matching the textarea below. */}
+                <div className="composer__settings">
+                    <div className="composer__setting">
+                        <span className="composer__setting-label">Model</span>
+                        <uni-dropdown-menu placement="bottom-start">
+                            <uni-button slot="toggle" variant="tertiary" xs caret disabled={waiting || undefined}>
+                                {MODELS.find((m) => m.id === model)?.label ?? model}
+                            </uni-button>
+                            <uni-menu
+                                onuni-select={(event: any) => selectModel(event.detail.dataset.model as ModelId)}
+                            >
+                                {MODELS.map((m) => (
+                                    <uni-menu-item
+                                        key={m.id}
+                                        data-model={m.id}
+                                        selected={m.id === model || undefined}
+                                    >
+                                        {m.label}
+                                    </uni-menu-item>
+                                ))}
+                            </uni-menu>
+                        </uni-dropdown-menu>
+                    </div>
+                    <div className="composer__setting">
+                        <span className="composer__setting-label">Effort</span>
+                        <uni-dropdown-menu placement="bottom-start">
+                            <uni-button slot="toggle" variant="tertiary" xs caret disabled={waiting || undefined}>
+                                {EFFORTS.find((e) => e.id === effort)?.label ?? effort}
+                            </uni-button>
+                            <uni-menu
+                                onuni-select={(event: any) => selectEffort(event.detail.dataset.effort as Effort)}
+                            >
+                                {EFFORTS.map((e) => (
+                                    <uni-menu-item
+                                        key={e.id}
+                                        data-effort={e.id}
+                                        selected={e.id === effort || undefined}
+                                    >
+                                        {e.label}
+                                    </uni-menu-item>
+                                ))}
+                            </uni-menu>
+                        </uni-dropdown-menu>
+                    </div>
+                </div>
                 {/* The placeholder is not an example. A fifth one here, absent from the curated
                     three above, made the whole set look generated rather than chosen; this says
                     how to write instead, which is the half of the old intro copy worth keeping. */}

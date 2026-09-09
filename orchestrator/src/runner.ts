@@ -43,7 +43,13 @@ export interface Runner {
     reset(): Promise<void>;
     startDev(bus: EventBus): Promise<void>;
     /** Runs one turn of `run.mjs` — locally or in a sandbox — and streams its output onto `bus`. */
-    runTurn(bus: EventBus, prompt: string, resume: string | undefined): Promise<TurnResult>;
+    runTurn(
+        bus: EventBus,
+        prompt: string,
+        resume: string | undefined,
+        model: string | undefined,
+        effort: string | undefined,
+    ): Promise<TurnResult>;
     verify(bus: EventBus): Promise<VerifyResult[]>;
     dispose(): Promise<void>;
 }
@@ -196,7 +202,13 @@ export class LocalRunner implements Runner {
      * quoting accident waiting to happen, and this is the same mechanism VercelRunner uses, just
      * without a sandbox in the way.
      */
-    async runTurn(bus: EventBus, prompt: string, resume: string | undefined): Promise<TurnResult> {
+    async runTurn(
+        bus: EventBus,
+        prompt: string,
+        resume: string | undefined,
+        model: string | undefined,
+        effort: string | undefined,
+    ): Promise<TurnResult> {
         const promptFile = join(tmpdir(), `factory-turn-${randomUUID()}.txt`);
         await writeFile(promptFile, prompt, 'utf8');
 
@@ -204,6 +216,8 @@ export class LocalRunner implements Runner {
             return await new Promise<TurnResult>((resolve, reject) => {
                 const args = ['--prompt-file', promptFile, '--cwd', this.target.dir];
                 if (resume) args.push('--resume', resume);
+                if (model) args.push('--model', model);
+                if (effort) args.push('--effort', effort);
 
                 const child = spawn('node', [AGENT_SCRIPT, ...args], { env: process.env });
                 let result: TurnResult = { sessionId: resume };

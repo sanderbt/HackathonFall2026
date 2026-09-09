@@ -34,6 +34,86 @@ export type FactoryEvent = { seq: number } & (
 const FALLBACK = 'http://127.0.0.1:8787';
 
 /**
+ * The models the orchestrator's allowlist accepts, mirrored from `server.ts`'s `ALLOWED_MODELS`.
+ * A value outside this set is dropped server-side and falls back to the harness's own default, so
+ * keeping the two lists in sync is only a UX nicety, never a correctness requirement.
+ */
+export type ModelId = 'claude-haiku-4-5-20251001' | 'claude-sonnet-5' | 'claude-opus-5';
+
+export const MODELS: Array<{ id: ModelId; label: string }> = [
+    { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
+    { id: 'claude-sonnet-5', label: 'Sonnet 5' },
+    { id: 'claude-opus-5', label: 'Opus 5' },
+];
+
+export const DEFAULT_MODEL: ModelId = 'claude-haiku-4-5-20251001';
+
+const MODEL_KEY = 'plugin-factory:model';
+
+export function isModelId(value: string): value is ModelId {
+    return MODELS.some((m) => m.id === value);
+}
+
+/** The user's remembered model choice, same `localStorage` caveats as `base()`. */
+export function getModel(): ModelId {
+    try {
+        const saved = localStorage.getItem(MODEL_KEY);
+        return saved && isModelId(saved) ? saved : DEFAULT_MODEL;
+    } catch {
+        return DEFAULT_MODEL;
+    }
+}
+
+export function saveModel(id: ModelId): void {
+    try {
+        localStorage.setItem(MODEL_KEY, id);
+    } catch {
+        // Storage can be denied outright. Losing the preference is not worth losing the view.
+    }
+}
+
+/**
+ * How much thinking Claude puts into a turn, mirrored from `server.ts`'s `ALLOWED_EFFORTS`. Same
+ * fallback rule as a model: a value outside this set is dropped server-side, and the harness's own
+ * default (`'high'`) applies.
+ */
+export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+export const EFFORTS: Array<{ id: Effort; label: string }> = [
+    { id: 'low', label: 'Low' },
+    { id: 'medium', label: 'Medium' },
+    { id: 'high', label: 'High' },
+    { id: 'xhigh', label: 'Extra high' },
+    { id: 'max', label: 'Max' },
+];
+
+export const DEFAULT_EFFORT: Effort = 'high';
+
+const EFFORT_KEY = 'plugin-factory:effort';
+
+export function isEffort(value: string): value is Effort {
+    return EFFORTS.some((e) => e.id === value);
+}
+
+/** The user's remembered effort choice, same `localStorage` caveats as `base()`. */
+export function getEffort(): Effort {
+    try {
+        const saved = localStorage.getItem(EFFORT_KEY);
+        return saved && isEffort(saved) ? saved : DEFAULT_EFFORT;
+    } catch {
+        return DEFAULT_EFFORT;
+    }
+}
+
+export function saveEffort(id: Effort): void {
+    try {
+        localStorage.setItem(EFFORT_KEY, id);
+    } catch {
+        // Storage can be denied outright. Losing the preference is not worth losing the view.
+    }
+}
+
+/**
  * Where the orchestrator lives.
  *
  * Overridable at runtime because during a hackathon the backend moves, and repointing a running
@@ -58,12 +138,14 @@ export async function createSession(signal: AbortSignal): Promise<string> {
 export async function sendMessage(
     sessionId: string,
     text: string,
+    model: ModelId,
+    effort: Effort,
     signal: AbortSignal,
 ): Promise<void> {
     const res = await fetch(`${base()}/api/sessions/${sessionId}/messages`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, model, effort }),
         signal,
     });
     if (!res.ok) throw new Error(`orchestrator returned ${res.status}`);
