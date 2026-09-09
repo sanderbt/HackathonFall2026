@@ -108,6 +108,11 @@ export default function App({ host }: ViewProps) {
     const [previewUrl, setPreviewUrl] = useState<string | null>(null);
     const [sessionId, setSessionId] = useState<string | null>(null);
 
+    // Whether there is a plugin to look at yet. Until the first turn lands, the preview URL serves
+    // the empty template the session was provisioned from — so having a URL is not the same as
+    // having something worth opening, and only this says which.
+    const [built, setBuilt] = useState(false);
+
     // Two different failures. `offline` is a stream that dropped and is retrying itself, with the
     // session still running behind it; `unreachable` is never having got a session at all, which
     // nothing recovers from on its own and so needs a button.
@@ -177,6 +182,7 @@ export default function App({ host }: ViewProps) {
                         // A new turn is not the place to still be showing the last one's failure.
                         setError(null);
                     }
+                    if (event.state === 'updated') setBuilt(true);
                     const line = event.detail ? `${event.state}: ${event.detail}` : event.state;
                     // A phase change restarts that phase's own list of waiting lines. Carrying the
                     // count across would open a phase on whichever line the last one left off at.
@@ -310,6 +316,7 @@ export default function App({ host }: ViewProps) {
         setError(null);
         setLog([]);
         setPreviewUrl(null);
+        setBuilt(false);
         setBeat(0);
         setStartedAt(null);
         setElapsed(0);
@@ -426,21 +433,53 @@ export default function App({ host }: ViewProps) {
     const at = phase ? STEPS.findIndex((s) => s.phase === phase) : -1;
 
     /**
-     * The point of the entire screen once a build lands, so it sits in the stage rather than in a
-     * corner underneath the composer — and present but inert before then, because the URL goes
-     * live the moment the tunnel is up and what it serves until `done` is the plugin as it was.
+     * Where the build has got to.
      *
-     * Inert, it is `tertiary`: as a `secondary` it was the same shape and colour as the example
-     * prompts it sat under, so the one control that navigates out of this view read as a fourth
-     * suggestion. Nothing else on the intro is tertiary, and the stylesheet puts a step of the
-     * spacing scale between it and the suggestion group.
+     * It lives inside whichever state is on screen rather than in a section of its own. Captioned
+     * "Build progress" and parked between the examples and the composer, it was four blank circles
+     * promising something it could not show: before a request there is no phase, so no step is
+     * active, and a progress indicator with nothing marked reads as broken rather than as idle.
+     * Rendered only while a build is actually running, it always has an active step — and the
+     * spinner and the line above it say what it is the progress of, so the caption is no longer
+     * needed for anything but the accessible name.
      */
-    const open = previewUrl && (
+    const progress = (
+        <div className="progress" role="group" aria-label="Build progress">
+            <uni-stepper horizontal class="rail">
+                {STEPS.map(({ phase: step, name }, i) => (
+                    <uni-step
+                        key={step}
+                        name={name}
+                        active={(i === at && phase !== 'done') || undefined}
+                        completed={(at >= 0 && (i < at || phase === 'done')) || undefined}
+                    />
+                ))}
+            </uni-stepper>
+        </div>
+    );
+
+    /**
+     * The way out of this view, and the point of the whole screen once a build lands.
+     *
+     * Two things about it were unreadable. It rendered as soon as the tunnel came up — inert,
+     * tertiary, floating between the examples and the progress rail with equal air on both sides —
+     * so the one control that navigates out of here looked like a disabled fourth suggestion
+     * belonging to no group. And "inert" was doing the work of two different facts: no plugin yet,
+     * and a plugin being rebuilt. `built` separates them, so this now appears only when there is
+     * genuinely something to open, and appears *inside* the state block that explains it: under
+     * the summary of what was built on the ready screen, under the running stepper while a later
+     * change is being built.
+     *
+     * Full-size `primary` the moment the plugin is ready — the payoff action, and the only primary
+     * on the screen at that moment, because the composer's Send steps down to secondary for
+     * exactly as long as this is showing. `secondary small` the rest of the time: still the same
+     * shape and colour family, plainly ranked below whatever the screen is currently doing.
+     */
+    const open = built && previewUrl && (
         <div className={ready ? 'open open--ready' : 'open'}>
             <uni-button
-                variant={ready ? 'primary' : 'tertiary'}
+                variant={ready ? 'primary' : 'secondary'}
                 small={!ready || undefined}
-                disabled={!ready || undefined}
                 onClick={() => openPlugin(previewUrl)}
             >
                 Open your plugin
@@ -497,6 +536,7 @@ export default function App({ host }: ViewProps) {
                                 </p>
                             </div>
                             {request && <p className="echo">“{request}”</p>}
+                            {progress}
                             <p className="reassure">
                                 <span>
                                     {slow
@@ -513,6 +553,7 @@ export default function App({ host }: ViewProps) {
                                     Stop and start over
                                 </uni-button>
                             )}
+                            {open}
                         </div>
                     ) : ready ? (
                         <div className="wait">
@@ -523,6 +564,7 @@ export default function App({ host }: ViewProps) {
                                 <p className="message">Your plugin is ready</p>
                             </div>
                             {summary && <p className="summary">{summary}</p>}
+                            {open}
                             <p className="reassure">Ask for another change below whenever you like.</p>
                         </div>
                     ) : (
@@ -551,27 +593,14 @@ export default function App({ host }: ViewProps) {
                                     {message} Ready for your first request in a moment.
                                 </p>
                             )}
+                            {/* Nothing on a first visit: `built` is false, so the way out of the
+                                view is simply absent until there is somewhere for it to go. This
+                                is the intro a change came back to after failing — the plugin from
+                                before is still standing, and this is how to go and look at it. */}
+                            {open}
                         </div>
                     )}
-                    {open}
                 </div>
-            </div>
-
-            {/* The rail used to float between the suggestions and the composer, belonging to
-                neither and captioned by nothing — four labels a reader had to guess the subject of.
-                Named and boxed, it reads as the status of the thing being built. */}
-            <div className="status" role="group" aria-label="Build progress">
-                <p className="label">Build progress</p>
-                <uni-stepper horizontal class="rail">
-                    {STEPS.map(({ phase: step, name }, i) => (
-                        <uni-step
-                            key={step}
-                            name={name}
-                            active={(i === at && phase !== 'done') || undefined}
-                            completed={(at >= 0 && (i < at || phase === 'done')) || undefined}
-                        />
-                    ))}
-                </uni-stepper>
             </div>
 
             <div
@@ -603,12 +632,21 @@ export default function App({ host }: ViewProps) {
                     the edge, and `resize="auto"` means the box it was aligned to changes height as
                     you type. Its own row cannot be knocked out of alignment by either. */}
                 <div className="composer__send">
+                    {/* Secondary for exactly one state. Two filled blue buttons were on screen at
+                        the moment a build landed — this one and "Open your plugin" — both reading
+                        as the primary action while doing unrelated things. Iterating is the more
+                        frequent action and keeps the primary everywhere else; on the ready screen
+                        the payoff outranks it for one beat, and stepping this down is what says
+                        so. The label goes with it: "Build it" is what a first-time reader is
+                        actually doing, and "Send" only makes sense once there is something to
+                        send a change to. */}
                     <uni-button
+                        variant={ready ? 'secondary' : 'primary'}
                         loading={working || undefined}
                         disabled={waiting || undefined}
                         onClick={() => submit()}
                     >
-                        Send
+                        {built ? 'Send' : 'Build it'}
                     </uni-button>
                 </div>
             </div>

@@ -68,8 +68,8 @@ section > uni-alert {
     text-align: left;
 }
 
-/* Takes all the leftover height, which is what puts the status bar and the composer at the bottom
-   of the frame and the hero in the middle of what is left. Capping it instead leaves two pools of
+/* Takes all the leftover height, which is what puts the composer at the bottom of the frame and
+   the hero in the middle of what is left. Capping it instead leaves two pools of
    empty space — one inside this box, one under the composer — and reads as a small view in a big
    window. */
 .stage {
@@ -82,8 +82,9 @@ section > uni-alert {
     overflow: hidden;
 }
 
-/* Holds whichever of the three states is showing, plus the link to the result — which outlives all
-   three and so cannot live inside any of them. */
+/* Holds whichever of the three states is showing. The link to the result used to be parked here,
+   outside all three and therefore grouped with none of them; each state now renders it itself, in
+   the place where that state can explain it. */
 .panel {
     display: flex;
     flex-direction: column;
@@ -102,7 +103,7 @@ section > uni-alert {
     line-height: 1.4;
 }
 
-/* Names the group under it — the examples, the progress steps — instead of repeating the heading
+/* Names the group under it — the examples — instead of repeating the heading
    above it, which is what the subtitle that used to sit here did. Deliberately not the uppercase
    treatment `.title` gets: two of these on screen at once, shouting, would flatten the difference
    between the view's name and a caption inside it. */
@@ -112,11 +113,15 @@ section > uni-alert {
     color: var(--text-subdued, #666);
 }
 
+/* One per row, not wrapped. Three sentence-long prompts on a 44rem column wrap two-then-one, which
+   reads as a row that ran out of space rather than as a list of three things you could ask for —
+   and the odd one out looks like it belongs to something else. Stacked, they scan top to bottom
+   like the choices they are. */
 .suggestions {
     display: flex;
-    flex-wrap: wrap;
+    flex-direction: column;
+    align-items: center;
     gap: var(--s1);
-    justify-content: center;
     margin-top: var(--s1);
 }
 
@@ -168,6 +173,13 @@ section > uni-alert {
     color: var(--text-subdued, #666);
 }
 
+/* The session's own status, not a fourth line about the examples. Tucked under the last prompt at
+   the shared gap it read as one, which is how "Ready for your first request in a moment" ended up
+   looking like a caption on the suggestion list. */
+.intro .reassure {
+    margin-top: var(--s3);
+}
+
 .tick {
     font-size: 2rem;
     line-height: 1;
@@ -213,16 +225,16 @@ section > uni-alert {
     animation: pulse 1.2s infinite steps(1);
 }
 
-/* The rail's container. Four step labels with no subject were the least legible thing on the
-   screen: a caption is what says they describe the build rather than decorate the gap above the
-   composer. */
-.status {
+/* The rail's container, now inside the waiting state rather than in a captioned section of its
+   own between the examples and the composer. A step of the scale on either side separates it from
+   the line it is the progress of and from the reassurance under it, without opening the pool of
+   dead air the old standalone section sat in. */
+.progress {
     display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: var(--s2);
+    justify-content: center;
     flex: none;
     max-width: 100%;
+    margin: var(--s2) 0 var(--s1);
 }
 
 /* `align-self` is the whole point of this rule. The stepper centres its steps inside its own box
@@ -259,31 +271,46 @@ section > uni-alert {
     justify-content: center;
 }
 
-/* Inert and out of the way until the build lands — and separated from the example prompts above it
-   by a step of the scale, because the difference between "here is something you could ask for" and
-   "here is the way out of this screen" has to be visible before it is clicked. */
+/* Anchored to the state it belongs to rather than floating between two groups. It used to sit
+   between the examples and the progress rail with the same gap on both sides, which left the one
+   control that navigates out of this view captioned by nothing and grouped with nothing; a step of
+   the scale now ties it to the block above it, and it is only rendered when there is a plugin
+   behind it. */
 .open {
     display: flex;
     justify-content: center;
     flex: none;
     max-width: 100%;
-    margin-top: var(--s1);
+    margin-top: var(--s2);
 }
 
-/* Then it becomes the point of the screen: given its own room, and the only primary button on it.
-   Nothing else here competes for the eye. */
+/* Then it becomes the point of the screen: given its own room, and the only primary button on it
+   — the composer's Send steps down to secondary for as long as this is showing. */
 .open--ready {
-    margin-top: var(--s2);
+    margin-top: var(--s3);
+}
+
+/* Below the examples rather than among them: this is the way back to a plugin that already exists,
+   not a fourth thing to ask for. */
+.intro .open {
+    margin-top: var(--s4);
 }
 
 /* Everything the agent says about itself lives here: opt-in, capped, and scrolling inside its own
    box so opening it can never make the view itself scroll. Left-aligned on purpose — it is the one
-   thing on the screen that is read rather than looked at, and centred log lines are unreadable. */
+   thing on the screen that is read rather than looked at, and centred log lines are unreadable.
+
+   The rule above it is what makes that alignment read as a decision instead of an oversight. On a
+   screen where every other row is centred, a lone left-aligned chevron in the bottom corner looks
+   misplaced; spanning the column under a hairline, it is a footer, and a footer is allowed to be
+   left-aligned. */
 .log {
     flex: none;
     align-self: stretch;
     width: 100%;
     box-sizing: border-box;
+    padding-top: var(--s2);
+    border-top: 1px solid var(--border-default, #e0e0e0);
     text-align: left;
 }
 

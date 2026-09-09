@@ -117,9 +117,12 @@ it('offers a way in before anything has happened', async () => {
     // The examples are the way in for someone who does not know what to type, so an intro that
     // renders without them is not offering a way in.
     expect(view.shadowRoot?.textContent).toContain('List my ten largest unpaid customer invoices');
+    // And nothing else. A first visit offers one thing to do; a link to a plugin that does not
+    // exist yet, inert or not, is a second thing to read and a dead end to click.
+    expect(view.shadowRoot?.textContent).not.toContain('Open your plugin');
 });
 
-it('shows the plugin link once the tunnel is up', async () => {
+it('does not offer the plugin before the tunnel serves one', async () => {
     install();
     const view = await mount();
 
@@ -133,11 +136,10 @@ it('shows the plugin link once the tunnel is up', async () => {
         });
     });
 
-    expect(view.shadowRoot?.textContent).toContain('Open your plugin');
-    // The button carries the URL; the URL itself is not beside it. A tunnel address is noise to the
-    // person reading this, and `openExternal` is the host doing the opening, not a popup to block.
-    // It stays in the log under "Technical details", which is why this asserts on the stage.
-    expect(stage(view)).not.toContain('tunnelId=t_x');
+    // The URL goes live with the tunnel, well before the first turn lands — and what it serves
+    // until then is the empty template the session was provisioned from. Having a URL is not the
+    // same as having a plugin.
+    expect(view.shadowRoot?.textContent).not.toContain('Open your plugin');
 });
 
 it('says so when the orchestrator is not answering', async () => {
@@ -300,17 +302,74 @@ it('holds the link to the result back until the build is done', async () => {
         });
     });
 
-    // The URL goes live the moment the tunnel is up, but what it serves until the turn lands is the
-    // plugin as it was — so it is shown, and it is not yet clickable.
-    expect(button(view, 'Open your plugin')?.hasAttribute('disabled')).toBe(true);
+    // Nothing to open during the first build. It is not shown-but-inert either: a disabled control
+    // with no explanation beside it is a question, and the waiting screen has enough to read.
+    expect(button(view, 'Open your plugin')).toBeUndefined();
 
     await act(async () => {
         source.emit({ seq: 3, type: 'session.state', state: 'updated' });
     });
 
-    expect(button(view, 'Open your plugin')?.hasAttribute('disabled')).toBe(false);
+    expect(button(view, 'Open your plugin')).toBeDefined();
     // ...and it becomes the point of the screen rather than a footnote under the composer.
     expect(view.shadowRoot?.querySelector('.open--ready')).not.toBeNull();
+    // The button carries the URL; the URL itself is not beside it. A tunnel address is noise to the
+    // person reading this, and `openExternal` is the host doing the opening, not a popup to block.
+    // It stays in the log under "Technical details", which is why this asserts on the stage.
+    expect(stage(view)).not.toContain('tunnelId=t_z');
+});
+
+it('keeps the last built plugin reachable while a change is being built', async () => {
+    install();
+    const view = await mount();
+    const source = FakeEventSource.instances[0];
+
+    await act(async () => {
+        source.emit({
+            seq: 1,
+            type: 'preview.ready',
+            url: 'https://test.unimicro.no/#/plugins/sales/x/main?tunnelId=t_z',
+            tunnelId: 't_z',
+            companyKey: 'k',
+        });
+        source.emit({ seq: 2, type: 'session.state', state: 'updated' });
+        source.emit({ seq: 3, type: 'session.state', state: 'working' });
+    });
+
+    // A second turn is running, so the screen is a waiting screen again — but the plugin from the
+    // turn before is still standing behind that URL, and there is no reason to take away the way
+    // to go and look at it. Ranked below the build that is in progress, not hidden.
+    expect(stage(view)).toContain('Still going');
+    expect(button(view, 'Open your plugin')).toBeDefined();
+    expect(view.shadowRoot?.querySelector('.open--ready')).toBeNull();
+});
+
+it('marks where the build has got to, and only while it is running', async () => {
+    install();
+    const view = await mount();
+    const source = FakeEventSource.instances[0];
+
+    // Idle: no rail at all. Captioned "Build progress" with nothing marked on it, it promised
+    // something it could not show — four blank circles read as broken rather than as not started.
+    expect(view.shadowRoot?.querySelector('.progress')).toBeNull();
+
+    await act(async () => {
+        source.emit({ seq: 1, type: 'session.state', state: 'verifying' });
+    });
+
+    const steps = [...(view.shadowRoot?.querySelectorAll('.progress uni-step') ?? [])];
+    expect(steps.map((s) => s.getAttribute('name'))).toEqual([
+        'Getting ready',
+        'Building',
+        'Checking',
+        'Ready',
+    ]);
+    const marked = (flag: string) =>
+        steps.filter((s) => s.hasAttribute(flag)).map((s) => s.getAttribute('name'));
+
+    // The point of a stepper: one step is where we are, everything before it is behind us.
+    expect(marked('active')).toEqual(['Checking']);
+    expect(marked('completed')).toEqual(['Getting ready', 'Building']);
 });
 
 it('can be told to try again after the orchestrator was down', async () => {
