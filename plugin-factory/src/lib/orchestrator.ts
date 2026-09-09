@@ -151,6 +151,38 @@ export async function sendMessage(
     if (!res.ok) throw new Error(`orchestrator returned ${res.status}`);
 }
 
+/**
+ * Whether the factory can read this company's data, mirrored from the orchestrator's `McpStatus`.
+ *
+ * Never carries the token — only whether there is a usable one. `expired` is kept apart from
+ * `connected` because they deserve different words on screen: one has never been connected, the
+ * other was and needs a click to carry on.
+ */
+export type McpStatus = {
+    connected: boolean;
+    url: string;
+    expiresAt: number | null;
+    expired: boolean;
+};
+
+export async function getMcpStatus(signal: AbortSignal): Promise<McpStatus> {
+    const res = await fetch(`${base()}/api/mcp`, { signal });
+    if (!res.ok) throw new Error(`orchestrator returned ${res.status}`);
+    return (await res.json()) as McpStatus;
+}
+
+/**
+ * Where to send a browser tab to connect the company's data.
+ *
+ * A plain url the view opens directly, rather than a fetch that returns one: the orchestrator
+ * answers it with a 302 to Unimicro's broker, so the tab goes straight there, and the browser
+ * doing the opening is the one already signed in to Unimicro. Fetching a url first and opening it
+ * second is the shape popup blockers exist to catch.
+ */
+export function mcpLoginUrl(): string {
+    return `${base()}/api/mcp/login`;
+}
+
 /** What `GET /api/sessions/:id` returns, so a view that reloads can paint before its stream opens. */
 export type SessionSnapshot = {
     sessionId: string;

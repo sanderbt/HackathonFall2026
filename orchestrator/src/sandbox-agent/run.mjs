@@ -47,6 +47,55 @@ const FORBIDDEN =
 /** Files whose contents are contracts with the CLI, documented in their own comments. */
 const PROTECTED = /(^|\/)(vite\.config\.ts|tsconfig\.json|unimicro\.config\.json|manifest\.json)$/;
 
+/**
+ * The Unimicro MCP server, when the harness passed a token for it.
+ *
+ * Attached under the name `unimicro`, so its tools arrive as `mcp__unimicro__*`. Absent when no
+ * token was passed, and that is a supported way to run — the agent falls back to reading the
+ * platform-api reference, exactly as it did before this existed. See `../unimicro-mcp.ts` for why
+ * the token has to be handed in rather than fetched.
+ */
+const MCP_URL = process.env.UNIMICRO_MCP_URL;
+const MCP_TOKEN = process.env.UNIMICRO_MCP_TOKEN;
+const MCP_ENABLED = Boolean(MCP_URL && MCP_TOKEN);
+
+/**
+ * Writes go through the platform for real, even in a test company, so they are off by default.
+ *
+ * Matched on the tool NAME rather than declared per tool: the tool list depends on the server's
+ * version and on the caller's rights — Unimicro's own guide says to ask what tools exist rather
+ * than assume — so there is no fixed set of names to enumerate here.
+ */
+const MCP_WRITE_VERBS = new Set([
+    'create', 'new', 'add', 'insert', 'update', 'edit', 'change', 'set', 'write',
+    'patch', 'put', 'post', 'delete', 'remove', 'cancel', 'void',
+    'approve', 'reject', 'send', 'pay', 'book', 'register', 'import', 'upload',
+]);
+
+/**
+ * Whether an MCP tool name looks like a write.
+ *
+ * Matched on whole name segments rather than as a substring, which a first attempt got wrong in a
+ * way worth recording: `add` appears inside `get_customer_address` and `book` inside
+ * `get_bookkeeping_summary`, so a substring check quietly blocks reads. Splitting on non-alphanumerics
+ * and comparing whole words is the difference between a heuristic and a trap.
+ *
+ * It is still a heuristic. It errs toward blocking — a read caught here costs the agent a fallback
+ * to the reference docs, while a write missed here posts to somebody's books.
+ */
+function isMcpWrite(name) {
+    const prefix = 'mcp__unimicro__';
+    if (!String(name).startsWith(prefix)) return false;
+
+    return String(name)
+        .slice(prefix.length)
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .some((segment) => MCP_WRITE_VERBS.has(segment));
+}
+
+const MCP_ALLOW_WRITES = process.env.UNIMICRO_MCP_ALLOW_WRITES === '1';
+
 const SYSTEM_PROMPT = `
 You are editing a live Unimicro plugin. A dev tunnel is already running and the user is watching the
 result render in their real test company, so every change you make is visible to them within seconds.
@@ -129,6 +178,44 @@ same place, so it is the safer default throughout. Your working notes are not lo
 tool calls and narration are all kept, and the person can open them if they want them.
 `.trim();
 
+/**
+ * Appended only when the MCP server is actually attached.
+ *
+ * Kept separate rather than folded into SYSTEM_PROMPT with an "if you have it" hedge: telling an
+ * agent about tools it does not have is how you get invented tool calls and a turn spent recovering
+ * from them.
+ */
+const MCP_PROMPT = `
+## You can check your queries against the real company
+
+The Unimicro MCP server is attached. Its tools are named mcp__unimicro__* and they reach the same
+test company the plugin renders in, as the same user. List them before you plan around them — which
+tools exist depends on the server version and on what your user is allowed to do.
+
+Use it to settle the one question the four gates cannot answer. The platform-api reference tells you
+which fields and routes exist; MCP tells you what this company actually holds. So before you settle
+on a host.api call, read the equivalent data through MCP and look at the field names and values that
+come back — then write the query against what you just saw, not against what you expected to see.
+
+This also resolves the zero-rows ambiguity. If a page you wrote renders nothing, ask MCP whether the
+records exist at all. That turns "wrong query" versus "no data" from a guess into an answer, and
+your default hypothesis stays "wrong query" until MCP says the company is genuinely empty.
+
+${
+    MCP_ALLOW_WRITES
+        ? `Writes are enabled for this session. Use them only to give the view something to render — a
+customer, an invoice — and say plainly in your final message what you created, because these are
+real records in the user's test company and they will stay there.`
+        : `MCP is read-only here: the harness blocks every write tool. If you find yourself wanting one —
+usually to seed data so an empty view has something to show — do not look for a way around it. Say
+what you would have created and why, and let the person decide.`
+}
+
+What this does NOT license: MCP confirms the query, not the rendering. You still have no browser and
+your tests are still mocked. So "the query returns 14 rows in your test company" is something you
+may now say. "The view is showing your data correctly" is still something you cannot know.
+`.trim();
+
 async function main() {
     const args = parseArgs(process.argv.slice(2));
     const prompt = await readFile(args['prompt-file'], 'utf8');
@@ -153,7 +240,32 @@ async function main() {
             // A thrashing loop with five skills in context gets expensive fast.
             maxBudgetUsd: 1,
             resume: args.resume || undefined,
-            systemPrompt: { type: 'preset', preset: 'claude_code', append: SYSTEM_PROMPT },
+            systemPrompt: {
+                type: 'preset',
+                preset: 'claude_code',
+                append: MCP_ENABLED ? `${SYSTEM_PROMPT}\n\n${MCP_PROMPT}` : SYSTEM_PROMPT,
+            },
+            ...(MCP_ENABLED
+                ? {
+                      mcpServers: {
+                          unimicro: {
+                              type: 'http',
+                              url: MCP_URL,
+                              headers: { Authorization: `Bearer ${MCP_TOKEN}` },
+                              // Without this the tools sit behind tool search and the agent has to
+                              // discover them; with it they are in the turn-1 prompt, which is
+                              // where they need to be for the query-checking rule above to fire on
+                              // the first query rather than the second.
+                              alwaysLoad: true,
+                          },
+                      },
+                  }
+                : {}),
+            // `settingSources: ['project']` is what loads the five platform skills, and it would
+            // also load any `.mcp.json` sitting in the plugin directory. The plugin tree is written
+            // by an agent, so what MCP servers this process talks to is the harness's decision, not
+            // something the working tree gets to add to.
+            strictMcpConfig: true,
             hooks: {
                 // Hooks run before every other permission step, and a hook deny applies even under
                 // bypassPermissions. That makes this the only place these rules can actually hold.
@@ -171,6 +283,17 @@ async function main() {
                                             "That command is the harness's, not yours. The plugin id is already " +
                                             'reserved and permanent — creating another burns a global name forever — ' +
                                             'and the dev tunnel is already running. Edit the source and verify.',
+                                    };
+                                }
+
+                                if (!MCP_ALLOW_WRITES && isMcpWrite(name)) {
+                                    return {
+                                        decision: 'block',
+                                        reason:
+                                            'MCP is read-only in this session. That tool would write to the ' +
+                                            "user's real test company, which is not yours to decide. Read what " +
+                                            'you need, and if the view has nothing to show, say so and say what ' +
+                                            'data would make it show something.',
                                     };
                                 }
 
@@ -216,6 +339,30 @@ async function main() {
                     fatal: true,
                 });
             }
+
+            // Say it here rather than let it surface as tool calls failing mid-turn, which the
+            // agent reads as "no data" and reports as an empty result. Not fatal, unlike the skills
+            // check: without MCP the agent still has the reference docs and can still finish the
+            // plugin — it just cannot verify its queries, and the person deserves to know which of
+            // those two turns they got.
+            if (MCP_ENABLED) {
+                // `mcp_servers` on the wire, whatever the SDK's own type declaration says — it
+                // types this as `mcpServers` and the camelCase read comes back undefined, which
+                // would make every single turn report a connection failure. Both are read so a
+                // later SDK that honours its own types does not break this back the other way.
+                const servers = message.mcp_servers ?? message.mcpServers ?? [];
+                const server = servers.find((s) => s.name === 'unimicro');
+                if (server?.status !== 'connected') {
+                    emit({
+                        type: 'error',
+                        message:
+                            `Unimicro MCP did not connect (${server?.status ?? 'absent'}). Run ` +
+                            '`npm run mcp-login` — the token has most likely expired. This turn will ' +
+                            'run without live query verification.',
+                        fatal: false,
+                    });
+                }
+            }
             continue;
         }
 
@@ -246,9 +393,17 @@ async function main() {
 /** A one-line label for a tool call — enough for a collapsed row in the transcript. */
 function summarise(block) {
     const input = block.input ?? {};
-    const first =
-        input.file_path ?? input.command ?? input.pattern ?? input.path ?? input.description ?? '';
-    return String(first).slice(0, 160);
+    const known =
+        input.file_path ?? input.command ?? input.pattern ?? input.path ?? input.description;
+    if (known !== undefined) return String(known).slice(0, 160);
+
+    // MCP tools have their own argument names — `entity`, `companyKey`, whatever this server's
+    // version calls them — and none of the above match. Rather than render a blank row for the
+    // most interesting calls in the transcript, take the first scalar the tool was given.
+    const scalar = Object.values(input).find(
+        (value) => typeof value === 'string' || typeof value === 'number',
+    );
+    return String(scalar ?? '').slice(0, 160);
 }
 
 main().catch((error) => {

@@ -7,8 +7,10 @@ import {
   EFFORTS,
   forget,
   getEffort,
+  getMcpStatus,
   getModel,
   getSnapshot,
+  mcpLoginUrl,
   MODELS,
   remember,
   remembered,
@@ -18,9 +20,14 @@ import {
   stopSession,
   type Effort,
   type FactoryEvent,
+  type McpStatus,
   type ModelId,
   type SessionState,
 } from "#lib/orchestrator";
+
+/** How often, and for how long, the view checks whether a sign-in in another tab has landed. */
+const CONNECT_POLL_MS = 1500;
+const CONNECT_WINDOW_MS = 3 * 60 * 1000;
 
 /** A rejection from the host carries a stable `code`. Branch on that, never on the message. */
 function isHostError(error: unknown): error is HostError {
@@ -239,8 +246,15 @@ export default function App({ host }: ViewProps) {
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [elapsed, setElapsed] = useState(0);
 
+  // Whether the factory can read this company's own data, which is what lets the agent check a
+  // query instead of trusting the reference docs. The credential belongs to the orchestrator, not
+  // to this view — so all the view can do is ask, and send the user to a consent screen.
+  const [mcp, setMcp] = useState<McpStatus | null>(null);
+  const [connecting, setConnecting] = useState(false);
+
   const abortRef = useRef<AbortController | null>(null);
   const composer = useRef<(HTMLElement & { value: string }) | null>(null);
+  const pollRef = useRef<number | null>(null);
 
   // The state the last event carried, readable synchronously. An event handler has to compare the
   // phase it is leaving with the one it is entering, and `state` is always a render behind.
@@ -460,6 +474,73 @@ export default function App({ host }: ViewProps) {
     reset();
   }, [reset, sessionId]);
 
+  /**
+   * Ask the orchestrator whether the company's data is connected.
+   *
+   * Failure is deliberately silent. This is a side channel: if it cannot be answered, the control
+   * simply stays as it was, and nothing about building a plugin depends on it. An alert here would
+   * be the second one on screen for a backend that is already reported as unreachable.
+   */
+  const refreshMcp = useCallback(async (signal: AbortSignal) => {
+    try {
+      setMcp(await getMcpStatus(signal));
+    } catch {
+      // Left as-is on purpose. See above.
+    }
+  }, []);
+
+  useEffect(() => {
+    const abort = new AbortController();
+    void refreshMcp(abort.signal);
+    return () => abort.abort();
+  }, [refreshMcp]);
+
+  /** Stop watching for a connection, whether it arrived or the user walked away. */
+  const stopPolling = useCallback(() => {
+    if (pollRef.current !== null) {
+      window.clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+    setConnecting(false);
+  }, []);
+
+  useEffect(() => stopPolling, [stopPolling]);
+
+  /**
+   * Connect the company's data in one click.
+   *
+   * The tab is opened directly with a fixed url rather than fetching one first and opening it
+   * second — that second form is exactly what a popup blocker catches. The orchestrator answers
+   * it with a redirect to Unimicro's broker, and because this browser is already signed in to
+   * Unimicro, what the user sees is a consent screen rather than a login.
+   *
+   * Then poll. The flow finishes in that other tab, out of this view's sight: nothing calls back
+   * here, so asking repeatedly is the only way to notice. It stops on success or after
+   * CONNECT_WINDOW_MS, because a user who closed the tab is not coming back and a timer that
+   * never ends is a leak.
+   */
+  const connectData = useCallback(() => {
+    window.open(mcpLoginUrl(), "_blank", "noopener");
+    setConnecting(true);
+
+    const startedAt = Date.now();
+    if (pollRef.current !== null) window.clearInterval(pollRef.current);
+
+    pollRef.current = window.setInterval(() => {
+      void (async () => {
+        const abort = new AbortController();
+        try {
+          const next = await getMcpStatus(abort.signal);
+          setMcp(next);
+          if (next.connected) stopPolling();
+        } catch {
+          // Keep polling. A single failed check mid-sign-in means nothing.
+        }
+        if (Date.now() - startedAt > CONNECT_WINDOW_MS) stopPolling();
+      })();
+    }, CONNECT_POLL_MS);
+  }, [stopPolling]);
+
   const phase = PHASE_OF[state];
   const working = phase === "build" || phase === "check";
   const starting = phase === "prepare";
@@ -640,6 +721,40 @@ export default function App({ host }: ViewProps) {
       {offline && !unreachable && (
         <uni-alert type="warning" header="Lost contact with the plugin factory">
           Reconnecting. Anything already running carries on without us.
+        </uni-alert>
+      )}
+
+      {/* Shown only when there is something to click. Not a row in the composer's settings
+          beside Model and Effort: those are per-turn choices that ride along with the next
+          request, while this is a one-time machine-level credential the orchestrator holds
+          for every session. Putting it there would have implied it changes per turn. And
+          once connected there is nothing to say — a permanent "connected" badge is clutter
+          on the one screen whose whole job is to keep a single question in view. */}
+      {mcp && !mcp.connected && !unreachable && (
+        <uni-alert
+          type={mcp.expired ? "warning" : "info"}
+          header={
+            mcp.expired
+              ? "Reconnect your company data"
+              : "Let the factory check its work against your data"
+          }
+        >
+          {mcp.expired
+            ? "The connection has expired. Reconnecting takes a click — you are already signed in."
+            : "Connected, it can confirm a page is asking for the right thing instead of guessing. Opens a consent screen in a new tab."}
+          <uni-button
+            slot="actions"
+            variant="secondary"
+            small
+            loading={connecting || undefined}
+            onClick={connectData}
+          >
+            {connecting
+              ? "Waiting for the other tab…"
+              : mcp.expired
+                ? "Reconnect"
+                : "Connect"}
+          </uni-button>
         </uni-alert>
       )}
 

@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { feedAgentLine, type TurnResult } from './agent-events.ts';
 import type { EventBus } from './bus.ts';
 import type { VerifyStep } from './protocol.ts';
+import { mcpAgentEnv } from './unimicro-mcp.ts';
 
 /**
  * Where `run.mjs` lives on this machine.
@@ -212,6 +213,10 @@ export class LocalRunner implements Runner {
         const promptFile = join(tmpdir(), `factory-turn-${randomUUID()}.txt`);
         await writeFile(promptFile, prompt, 'utf8');
 
+        // Resolved per turn, not once at startup: `mcp-login` can be run while a session is open,
+        // and the next turn should pick the new token up without a restart.
+        const mcpEnv = await mcpAgentEnv();
+
         try {
             return await new Promise<TurnResult>((resolve, reject) => {
                 const args = ['--prompt-file', promptFile, '--cwd', this.target.dir];
@@ -219,7 +224,9 @@ export class LocalRunner implements Runner {
                 if (model) args.push('--model', model);
                 if (effort) args.push('--effort', effort);
 
-                const child = spawn('node', [AGENT_SCRIPT, ...args], { env: process.env });
+                const child = spawn('node', [AGENT_SCRIPT, ...args], {
+                    env: { ...process.env, ...mcpEnv },
+                });
                 let result: TurnResult = { sessionId: resume };
                 let buffer = '';
 

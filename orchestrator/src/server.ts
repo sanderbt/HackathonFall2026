@@ -6,6 +6,8 @@ import { EventBus } from './bus.ts';
 import { LocalRunner, type PluginTarget, type Runner, type VerifyResult } from './runner.ts';
 import { VercelRunner } from './vercel-runner.ts';
 import type { SessionSnapshot, SessionState } from './protocol.ts';
+import { mcpStatus } from './unimicro-mcp.ts';
+import { begin, complete, type Pending } from './mcp-auth.ts';
 
 /**
  * How many times the harness will hand a failing gate straight back to the agent before giving up
@@ -206,6 +208,58 @@ async function handleTurn(
     }
 }
 
+/**
+ * The one authorization in flight, if any.
+ *
+ * A module-level single, like `active`: this service is loopback-only and single-user by
+ * construction, and the redirect uri is one fixed string. Two overlapping flows would race on the
+ * same callback anyway, so the second start replaces the first rather than pretending otherwise.
+ */
+let pendingMcp: Pending | null = null;
+
+/** How long a started flow stays claimable before the callback is treated as stale. */
+const MCP_FLOW_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * Where the broker sends the browser back.
+ *
+ * A route on this server rather than a listener of its own: there is already an HTTP server on this
+ * port, the browser is already talking to it, and one fewer port is one fewer thing to be in use.
+ * It must be literally this string — the server matches the redirect uri exactly, and it is baked
+ * into the client registration keyed by it.
+ *
+ * `FACTORY_PUBLIC_ORIGIN` is what makes this deployable rather than laptop-only. Set it to the
+ * origin a browser reaches this service at — `https://factory.example.com` — and the callback, the
+ * client registration and the redirect all follow, with no other change anywhere. Left unset it is
+ * loopback, which is the right default while the tunnel credential still has to come off a
+ * developer's machine.
+ *
+ * It has to be the *browser's* view of this service, not the socket's: behind a proxy or a tunnel
+ * those differ, and a redirect uri built from the socket sends the user to a host only the server
+ * can see. That failure arrives as an invalid_redirect_uri from the broker, which reads like a
+ * registration problem rather than a configuration one.
+ */
+const PUBLIC_ORIGIN = (process.env.FACTORY_PUBLIC_ORIGIN ?? `http://${HOST}:${PORT}`).replace(
+    /\/+$/,
+    '',
+);
+const MCP_REDIRECT_URI = `${PUBLIC_ORIGIN}/api/mcp/callback`;
+
+/** A small self-closing page for the tab the user was sent to. */
+function mcpCallbackPage(res: ServerResponse, heading: string, detail: string): void {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(
+        `<!doctype html><meta charset="utf-8"><title>${heading}</title>` +
+            '<body style="font:16px/1.5 system-ui,sans-serif;margin:0;display:grid;place-items:center;height:100vh">' +
+            `<div style="text-align:center;max-width:28rem;padding:2rem">` +
+            `<h1 style="font-size:1.25rem;margin:0 0 .5rem">${heading}</h1>` +
+            `<p style="margin:0;color:#555">${detail}</p></div>` +
+            // Best-effort. A tab the browser did not open via script cannot close itself, and the
+            // copy above has to stand on its own for exactly that case.
+            '<script>setTimeout(function(){window.close()},1200)</script>',
+    );
+}
+
 function json(res: ServerResponse, status: number, body: unknown): void {
     const payload = JSON.stringify(body);
     res.writeHead(status, {
@@ -247,6 +301,75 @@ const server = createServer(async (req, res) => {
             }),
         );
         return json(res, 201, { sessionId: session.id, pluginId: TARGET.pluginId });
+    }
+
+    // Connecting the agent to the company's own data. Three routes and no session: this is a
+    // machine-level credential, shared by every session the orchestrator runs.
+    if (req.method === 'GET' && path === '/api/mcp') {
+        return json(res, 200, await mcpStatus());
+    }
+
+    /**
+     * Start the flow by redirecting the browser at the broker.
+     *
+     * A redirect rather than a JSON endpoint returning the url, because the caller is a plugin view
+     * in a browser that is already signed in to Unimicro: it opens this in a tab, the broker sees
+     * the existing session, and consent is a click. Handing the view a url to open in a second step
+     * would just give a popup blocker something to catch.
+     */
+    if (req.method === 'GET' && path === '/api/mcp/login') {
+        try {
+            const { url, pending } = await begin(MCP_REDIRECT_URI);
+            pendingMcp = pending;
+            res.writeHead(302, { Location: url, 'Cache-Control': 'no-store' });
+            return res.end();
+        } catch (error) {
+            return mcpCallbackPage(
+                res,
+                'Could not start the sign-in',
+                String(error instanceof Error ? error.message : error),
+            );
+        }
+    }
+
+    if (req.method === 'GET' && path === '/api/mcp/callback') {
+        const code = url.searchParams.get('code');
+        const state = url.searchParams.get('state');
+        const failure = url.searchParams.get('error');
+        const pending = pendingMcp;
+        pendingMcp = null;
+
+        if (failure) {
+            return mcpCallbackPage(res, 'Sign-in was not completed', 'You can close this tab.');
+        }
+        if (!pending || Date.now() - pending.startedAt > MCP_FLOW_TTL_MS) {
+            return mcpCallbackPage(
+                res,
+                'That sign-in had already expired',
+                'Close this tab and press Connect again.',
+            );
+        }
+        // A mismatched state is not the response we asked for. Refuse it rather than exchanging a
+        // code that arrived from somewhere else.
+        if (state !== pending.state || !code) {
+            return mcpCallbackPage(res, 'Unexpected response', 'Close this tab and try again.');
+        }
+
+        try {
+            await complete(code, pending);
+            console.log('mcp: connected');
+            return mcpCallbackPage(
+                res,
+                'Connected',
+                'The factory can read your company data now. You can close this tab.',
+            );
+        } catch (error) {
+            return mcpCallbackPage(
+                res,
+                'Could not finish the sign-in',
+                String(error instanceof Error ? error.message : error),
+            );
+        }
     }
 
     const match = /^\/api\/sessions\/([^/]+)(\/[a-z]+)?$/.exec(path);
@@ -309,6 +432,7 @@ const server = createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
     console.log(`plugin-factory orchestrator on http://${HOST}:${PORT}`);
+    if (PUBLIC_ORIGIN !== `http://${HOST}:${PORT}`) console.log(`  public  ${PUBLIC_ORIGIN}`);
     console.log(`  plugin  ${TARGET.pluginId}`);
     console.log(`  dir     ${TARGET.dir}`);
 });

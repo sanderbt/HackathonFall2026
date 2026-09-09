@@ -17,6 +17,7 @@ npm start          # http://127.0.0.1:8787
 | `VERCEL_TOKEN` *or* `VERCEL_OIDC_TOKEN` | Only for the sandbox | Creating Vercel Sandboxes. |
 | `FACTORY_REPO_URL` | Only for the sandbox | Git URL the sandbox clones the plugin from. |
 | `GITHUB_TOKEN` | Only if that repo is private | Used as the password with username `x-access-token`. |
+| `.unimicro-mcp.json` | Optional | Live query verification. Written by the Connect button, or `npm run mcp-login`. Never by hand. |
 
 With neither Vercel variable set, the agent and the builds run on this machine, and everything the
 user sees is identical. **`VERCEL_OIDC_TOKEN` from `vercel env pull` expires after 12 hours**; use
@@ -59,6 +60,51 @@ that looks unrelated:
 | `POST /api/sessions/:id/messages` | `{ text }`. Returns 202; output arrives on the stream. |
 | `POST /api/sessions/:id/verify` | Run the four gates alone, without an agent turn. |
 | `POST /api/sessions/:id/stop` | Tear down. |
+
+## Checking the agent's queries against the real company
+
+The four gates prove the code compiles, passes its own mocked tests, builds and validates. None of
+them can tell whether a `host.api` query is *right* — a wrong route, a wrong field name or an
+unsupported filter operator comes back 200 with an empty array or the whole unfiltered collection,
+and every gate passes. That is the most likely way this harness ships something confident and wrong.
+
+Attaching Unimicro's MCP server closes exactly that gap, and nothing else: the agent reads the same
+test company the plugin renders in, so it can confirm a query returns what it expects before
+committing to it, and tell "wrong query" apart from "no data" when a view comes up empty.
+
+**The user connects it from the plugin itself.** An alert offers a Connect button whenever there is
+no usable token; it opens Unimicro's consent screen in a new tab, and since that browser is already
+signed in to the platform, there is no login to do. The view then polls `GET /api/mcp` until the
+token lands. Nothing to install, nothing to paste, no terminal.
+
+`npm run mcp-login` does the same thing from a shell, for when the view is not up.
+
+Activate **Unimicro Mcp** in the marketplace for the test company first, or the connection succeeds
+and no tools arrive at all.
+
+| | |
+| --- | --- |
+| `GET /api/mcp` | Whether a usable token exists. Never returns the token. |
+| `GET /api/mcp/login` | 302 to Unimicro's broker. What the button opens. |
+| `GET /api/mcp/callback` | Where the broker comes back. Exchanges the code and stores the token. |
+
+- **The browser round-trip is the protocol, not a gap in this implementation.** The server
+  advertises `authorization_code` and nothing else; token exchange is refused outright ("Only
+  authorization_code is supported on the broker token endpoint"), and there is no client-credentials
+  grant. Everything around the consent click — discovery, dynamic client registration, PKCE, the
+  exchange — is automated.
+- **The CLI session is a different credential.** The token `vercel-runner.ts` injects for the tunnel
+  is refused here with a 401: separate resource, separate registration. Two doors, two keys.
+- **The callback is a route on this server, not a second listener.** One port, and the redirect uri
+  is matched as an exact string, so it is baked into the client registration keyed by it.
+- **There is no refresh grant.** When the token expires the alert comes back, wording itself as a
+  reconnect. The harness notices on the next turn rather than letting tool calls 401 mid-turn, which
+  an agent reads as "no data".
+- **Writes are blocked** unless `UNIMICRO_MCP_ALLOW_WRITES=1`. Blocked in the `PreToolUse` hook,
+  where a deny holds even under `bypassPermissions` — same reason `unimicro plugin create` lives
+  there. Enable it only to let the agent seed data so an empty view has something to render.
+- **Missing is not broken.** With no token the agent runs exactly as it did before, falling back to
+  the platform-api reference. Query verification is the only thing lost.
 
 ## Things that are load-bearing
 

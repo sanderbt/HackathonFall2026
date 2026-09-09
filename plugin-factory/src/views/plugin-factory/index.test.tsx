@@ -70,7 +70,8 @@ class FakeEventSource {
 function install({
     sessionOk = true,
     snapshot = null,
-}: { sessionOk?: boolean; snapshot?: unknown } = {}) {
+    mcp = { connected: false, url: 'https://test-mcp.unimicro.app/mcp', expiresAt: null, expired: false },
+}: { sessionOk?: boolean; snapshot?: unknown; mcp?: unknown } = {}) {
     FakeEventSource.instances = [];
     vi.stubGlobal('EventSource', FakeEventSource);
 
@@ -79,6 +80,12 @@ function install({
         'fetch',
         vi.fn(async (url: string) => {
             calls.push(String(url));
+            // Answered before the sessionOk switch: whether the company's data is connected is a
+            // different question from whether a session can be created, and a test for one should
+            // not have to care about the other.
+            if (/\/api\/mcp$/.test(String(url))) {
+                return { ok: true, status: 200, json: async () => mcp } as Response;
+            }
             if (!sessionOk) return { ok: false, status: 500, json: async () => ({}) } as Response;
             if (/\/api\/sessions\/[^/]+$/.test(String(url))) {
                 return snapshot
@@ -120,6 +127,50 @@ it('offers a way in before anything has happened', async () => {
     // And nothing else. A first visit offers one thing to do; a link to a plugin that does not
     // exist yet, inert or not, is a second thing to read and a dead end to click.
     expect(view.shadowRoot?.textContent).not.toContain('Open your plugin');
+});
+
+it('offers one click to connect the company data', async () => {
+    install();
+    const view = await mount();
+
+    // Asserted on the body copy and the button, not the alert's `header`: that is an attribute on
+    // the design-system element, and an unupgraded custom element in jsdom renders none of it.
+    expect(view.shadowRoot?.textContent).toContain('confirm a page is asking for the right thing');
+    expect(view.shadowRoot?.textContent).toContain('Connect');
+});
+
+it('says nothing about the company data once it is connected', async () => {
+    install({
+        mcp: {
+            connected: true,
+            url: 'https://test-mcp.unimicro.app/mcp',
+            expiresAt: Date.now() + 3_600_000,
+            expired: false,
+        },
+    });
+    const view = await mount();
+
+    // A permanent "connected" badge is clutter on the one screen whose job is to keep a single
+    // question in view. Connected means there is nothing to say.
+    expect(view.shadowRoot?.textContent).not.toContain('confirm a page is asking for the right thing');
+    expect(view.shadowRoot?.textContent).not.toContain('The connection has expired');
+});
+
+it('asks for a reconnect rather than a first connect when the token has aged out', async () => {
+    install({
+        mcp: {
+            connected: false,
+            url: 'https://test-mcp.unimicro.app/mcp',
+            expiresAt: Date.now() - 1000,
+            expired: true,
+        },
+    });
+    const view = await mount();
+
+    // Different words for a different situation: one has never been connected, the other was and
+    // needs a click to carry on.
+    expect(view.shadowRoot?.textContent).toContain('The connection has expired');
+    expect(view.shadowRoot?.textContent).not.toContain('confirm a page is asking for the right thing');
 });
 
 it('does not offer the plugin before the tunnel serves one', async () => {

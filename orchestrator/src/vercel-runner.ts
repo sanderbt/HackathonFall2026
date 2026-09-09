@@ -9,6 +9,7 @@ import { feedAgentLine, type TurnResult } from './agent-events.ts';
 import type { EventBus } from './bus.ts';
 import type { PluginTarget, Runner, VerifyResult } from './runner.ts';
 import type { VerifyStep } from './protocol.ts';
+import { mcpAgentEnv } from './unimicro-mcp.ts';
 
 /**
  * Runs the same steps as LocalRunner, inside a Vercel Sandbox.
@@ -329,7 +330,14 @@ export class VercelRunner implements Runner {
             cmd: 'node',
             args,
             cwd: AGENT_DIR,
-            env: { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? '' },
+            env: {
+                ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? '',
+                // Resolved per turn rather than at provision time: `mcp-login` can be run while a
+                // sandbox is up, and the next turn should pick the new token up without a reset.
+                // The token never touches the sandbox filesystem — it lives in this one env, for
+                // the life of one process.
+                ...(await mcpAgentEnv()),
+            },
             detached: true,
         });
 
@@ -373,16 +381,18 @@ export class VercelRunner implements Runner {
     }
 
     /**
-     * Stop, do not delete.
+     * Delete, do not stop.
      *
-     * Sandboxes are persistent by default: stopping snapshots the filesystem, so the next session
-     * resumes with node_modules already installed. Stopping promptly also matters for cost —
-     * provisioned memory is billed on wall-clock even at 0% CPU, unlike Active CPU which excludes
-     * I/O wait.
+     * `reset()` above always calls `Sandbox.create()` fresh — never `Sandbox.get()` on a name or
+     * snapshot — so no future session ever resumes what `stop()` would leave behind. Stopping a
+     * persistent sandbox snapshots its filesystem regardless, so it used to leak one ~1GB Vercel
+     * Sandbox snapshot per run with nothing left to ever read it back or clean it up, which is what
+     * ran the Hobby plan's Snapshots Storage quota out. `deleteOrphanSnapshots` removes this
+     * sandbox's own snapshot along with it.
      */
     async dispose(): Promise<void> {
         this.devCmd = null;
-        await this.sandbox?.stop().catch(() => {});
+        await this.sandbox?.delete({ deleteOrphanSnapshots: true }).catch(() => {});
         this.sandbox = null;
     }
 }
