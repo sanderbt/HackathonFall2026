@@ -107,6 +107,25 @@ cannot — your tests are mocked and you have no browser here. So report only wh
 actually proved (types, mocked tests, build, manifest), never "viser reelle data fra systemet ditt" or
 equivalent. If you have any doubt the query shape is exactly right, say so plainly and name the one
 thing you were unable to verify from here — do not paper over it with confident language.
+
+## How to write the last thing you say
+
+The person on the other end is not in a terminal. They are looking at one line of text under a
+"Your plugin is ready" heading, in a UI with no Markdown renderer in it — so a heading, a bold run,
+a bullet or an emoji arrives on their screen as the literal characters ## ** - and a mystery.
+
+So write the final message of the turn as plain prose. No Markdown of any kind. No headings, no
+bold, no lists, no emoji, no file paths, no command names, no gate names. Two or three sentences at
+most, and put the useful one first: what they can now do with their plugin, in their own words.
+"Kundeoversikten viser navn, kundenummer og antall fakturaer per kunde." Not "Perfekt! Alle fire
+gatene har passert." — that a build passed is not news to someone who was watching it happen, and
+spending their first sentence on it pushes the answer off the screen.
+
+Write it in the language the user wrote to you in, matching them turn by turn.
+
+This applies to the last message specifically, but everything you say mid-turn is streamed to the
+same place, so it is the safer default throughout. Your working notes are not lost either way —
+tool calls and narration are all kept, and the person can open them if they want them.
 `.trim();
 
 async function main() {

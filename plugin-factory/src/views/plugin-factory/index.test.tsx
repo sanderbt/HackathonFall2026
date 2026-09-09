@@ -228,6 +228,38 @@ it('says the plugin is ready rather than listing the gates that passed', async (
     expect(stage(view)).toContain('Added an overdue invoices page.');
 });
 
+it("reads the agent's closing message back as prose, not as Markdown", async () => {
+    install();
+    const view = await mount();
+    const source = FakeEventSource.instances[0];
+
+    // What a turn actually ends with. The agent writes for a terminal, so it writes Markdown.
+    const text = [
+        'Ferdig! Alle fire gatene har passert.',
+        '',
+        '## Hva ble laget',
+        '',
+        '- **Kundenavn** og kundenummer',
+        '- **Antall fakturaer** per kunde',
+    ].join('\n');
+
+    await act(async () => {
+        source.emit({ seq: 1, type: 'agent.text', text });
+        source.emit({ seq: 2, type: 'session.state', state: 'updated' });
+    });
+
+    // Verbatim, this printed `##` and `**` down the middle of the payoff screen and the line clamp
+    // cut it off mid-word. The heading is dropped rather than read out as the summary of what it
+    // is a caption for, and the two bullets are separated rather than run into one sentence.
+    expect(stage(view)).toContain(
+        'Ferdig! Alle fire gatene har passert. Kundenavn og kundenummer; Antall fakturaer per kunde',
+    );
+    expect(stage(view)).not.toContain('#');
+    expect(stage(view)).not.toContain('**');
+    // And the message as it was written is still there in full, for whoever wants all of it.
+    expect(view.shadowRoot?.querySelector('.log pre')?.textContent).toContain('## Hva ble laget');
+});
+
 /** Finds a design-system button by its label, since nothing here registers <uni-button>. */
 function button(view: HTMLElement, label: string): Element | undefined {
     return [...(view.shadowRoot?.querySelectorAll('uni-button') ?? [])].find((b) =>
