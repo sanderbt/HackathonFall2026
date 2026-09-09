@@ -90,10 +90,13 @@ async function main() {
             // agent writes confident code against an API it has invented.
             settingSources: ['project'],
             skills: 'all',
+            // Haiku over Sonnet's default: this harness is tool-calling + skill-reading, not
+            // creative writing, and Haiku is a fraction of the cost per token for that shape of work.
+            model: 'claude-haiku-4-5-20251001',
             permissionMode: 'bypassPermissions',
             maxTurns: 80,
             // A thrashing loop with five skills in context gets expensive fast.
-            maxBudgetUsd: 5,
+            maxBudgetUsd: 1,
             resume: args.resume || undefined,
             systemPrompt: { type: 'preset', preset: 'claude_code', append: SYSTEM_PROMPT },
             hooks: {
