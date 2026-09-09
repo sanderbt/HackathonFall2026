@@ -3,9 +3,16 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { EventBus } from './bus.ts';
-import { LocalRunner, type PluginTarget, type Runner } from './runner.ts';
+import { LocalRunner, type PluginTarget, type Runner, type VerifyResult } from './runner.ts';
 import { VercelRunner } from './vercel-runner.ts';
 import type { SessionSnapshot, SessionState } from './protocol.ts';
+
+/**
+ * How many times the harness will hand a failing gate straight back to the agent before giving up
+ * and telling the human. Without this, "the user pastes the error back in" *is* the product — this
+ * is that loop, automated.
+ */
+const MAX_REPAIR_ROUNDS = 3;
 
 /**
  * Bound to 127.0.0.1 deliberately.
@@ -107,26 +114,63 @@ async function provision(session: Session): Promise<void> {
     setState(session, 'live', 'the plugin is running — tell me what to build');
 }
 
+/** What the agent gets told when a gate it thought it passed turns out not to have. */
+function repairPrompt(failed: VerifyResult): string {
+    return [
+        `The \`${failed.step}\` gate failed after your last change:`,
+        '',
+        '```',
+        failed.output.slice(-4000),
+        '```',
+        '',
+        'Fix the underlying problem, then re-run all four gates from the top, in order — npm run ' +
+            'check, npm test, npm run build, unimicro plugin validate --json — since a fix for this ' +
+            'one can regress one that was already passing. Do not finish this turn until all four are ' +
+            'green.',
+    ].join('\n');
+}
+
 async function handleTurn(session: Session, text: string): Promise<void> {
     try {
         if (session.state === 'created') await provision(session);
 
-        setState(session, 'working');
-        const result = await session.runner.runTurn(session.bus, text, session.agentSessionId);
-        session.agentSessionId = result.sessionId;
+        let prompt = text;
+        let usd = 0;
+        let turns = 0;
+        let results: VerifyResult[] = [];
+        let failed: VerifyResult | undefined;
 
-        // The agent is asked to verify, but asking is not the same as knowing. The gate runs
-        // independently so "done" means the four commands actually passed.
-        setState(session, 'verifying');
-        const results = await session.runner.verify(session.bus);
-        const failed = results.find((r) => !r.ok);
+        // The agent is asked to verify as it goes, but asking is not the same as knowing. The gate
+        // runs independently here, and on failure the agent gets the real output back and another
+        // turn to fix it — up to MAX_REPAIR_ROUNDS times — before a human ever sees the error.
+        for (let attempt = 0; attempt <= MAX_REPAIR_ROUNDS; attempt += 1) {
+            setState(
+                session,
+                'working',
+                attempt === 0 ? undefined : `auto-fixing ${failed?.step} (attempt ${attempt}/${MAX_REPAIR_ROUNDS})`,
+            );
+            const result = await session.runner.runTurn(session.bus, prompt, session.agentSessionId);
+            session.agentSessionId = result.sessionId;
+            usd += result.usd ?? 0;
+            turns += result.turns ?? 0;
+
+            setState(session, 'verifying');
+            results = await session.runner.verify(session.bus);
+            failed = results.find((r) => !r.ok);
+
+            if (!failed) break;
+            if (attempt === MAX_REPAIR_ROUNDS) break;
+            prompt = repairPrompt(failed);
+        }
 
         setState(
             session,
             failed ? 'failed' : 'updated',
-            failed ? `${failed.step} failed` : 'change is live — refresh the plugin tab',
+            failed
+                ? `${failed.step} is still failing after ${MAX_REPAIR_ROUNDS} automatic fix attempts — see the log above`
+                : 'change is live — refresh the plugin tab',
         );
-        session.bus.emit({ type: 'turn.done', usd: result.usd, turns: result.turns });
+        session.bus.emit({ type: 'turn.done', usd, turns });
     } catch (error) {
         session.bus.emit({ type: 'error', message: String(error), fatal: true });
         setState(session, 'failed');

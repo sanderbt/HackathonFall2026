@@ -84,6 +84,7 @@ export default function App({ host }: ViewProps) {
                     switch (event.type) {
                         case 'session.state':
                             setState(event.state);
+                            if (event.detail) push({ kind: 'note', text: event.detail });
                             break;
                         case 'agent.text':
                             push({ kind: 'assistant', text: event.text });

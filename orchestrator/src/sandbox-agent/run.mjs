@@ -64,18 +64,49 @@ Do not add views. Do not change the plugin id. Do not edit vite.config.ts, tscon
 unimicro.config.json or manifest.json — the harness owns those. Do not run any
 \`unimicro plugin create/publish\` command; the plugin already exists and the tunnel is already up.
 
-Verify after every change, in this exact order:
+You are not done when the code looks right. You are done when these four commands all exit clean, in
+this exact order, run by YOU with the Bash tool, most recently in this same turn:
   1. npm run check
   2. npm test
   3. npm run build
   4. unimicro plugin validate --json
-Step 4 reports entryFileMissing unless step 3 has run, so never reorder them.
+Step 4 reports entryFileMissing unless step 3 has just run, so never reorder them, and never skip
+straight to validate on the assumption that an earlier build still counts.
 
 Do NOT wait on \`unimicro plugin dev\` output to decide whether a build succeeded. This project uses
-proxy dev mode, where build verdicts never arrive. The four commands above are the only truth.
+proxy dev mode, where build verdicts never arrive. The four commands above are the only truth — not
+your read of the diff, not "that should work now".
 
-If the same error survives three fix attempts, stop and explain the problem in plain language to the
-business user who asked for this. Do not thrash.
+If a gate fails: read the actual error text, fix the root cause, then re-run **all four from the
+top**, not just the one that failed — a fix for step 2 can break step 1. You have up to 80 turns and
+a real budget in this one conversation; use them. Loop this yourself rather than reporting back after
+a single attempt. Only stop and explain the problem in plain language to the business user if the
+identical failure survives three of your own fix-and-rerun cycles within this turn.
+
+You do not get partial credit for "close" — a plugin that fails npm test is not a finished plugin,
+it is a bug report the user did not ask to receive.
+
+## The four gates cannot see whether your query is right
+
+npm test runs against a mock of host.api that you yourself wrote, npm run check only knows types,
+and validate only checks the manifest. None of them can tell you whether host.api.get(entity, query)
+is actually asking the platform for the right thing. A query with a wrong entity route, a wrong field
+name, a missing expand, or a filter operator the platform does not support does NOT error — it comes
+back 200 with either an empty array or, worse, the whole unfiltered collection. All four gates pass
+regardless. This is the most likely way you ship something that "works" and is wrong.
+
+So: every field name, expand path and route you use in a host.api call must come from literally
+re-reading the matching section of the platform-api entities reference in this same turn — not from
+memory, not by pattern-matching a similar-sounding entity you used earlier. If a page you just wrote
+renders zero rows, your default hypothesis is a wrong query, never "there is no data" — re-open the
+reference doc and check every field and expand path character by character before you consider any
+other explanation.
+
+Never tell the user their data is showing correctly unless you have genuinely confirmed it. You
+cannot — your tests are mocked and you have no browser here. So report only what the four gates
+actually proved (types, mocked tests, build, manifest), never "viser reelle data fra systemet ditt" or
+equivalent. If you have any doubt the query shape is exactly right, say so plainly and name the one
+thing you were unable to verify from here — do not paper over it with confident language.
 `.trim();
 
 async function main() {
