@@ -71,20 +71,31 @@ section > uni-alert {
 /* Takes all the leftover height, which is what puts the composer at the bottom of the frame and
    the hero in the middle of what is left. Capping it instead leaves two pools of
    empty space — one inside this box, one under the composer — and reads as a small view in a big
-   window. */
+   window.
+
+   Growing and shrinking, with no floor: this is the only row that may give up height, so it is the
+   only thing standing between a frame too short for the screen and a composer pushed out the
+   bottom of it. The `min-height: 12rem` that used to be here is exactly what did that — a floor
+   stops the shrinking, and everything below it, the field included, goes over the edge instead.
+   Free to do both, its height is whatever the fixed rows leave over and never what it contains,
+   which is also what keeps the `data-room` measurement from feeding back into itself. */
 .stage {
-    flex: 1;
+    flex: 1 1 auto;
     align-self: stretch;
-    min-height: 12rem;
+    min-height: 0;
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: center;
     overflow: hidden;
 }
 
 /* Holds whichever of the three states is showing. The link to the result used to be parked here,
    outside all three and therefore grouped with none of them; each state now renders it itself, in
-   the place where that state can explain it. */
+   the place where that state can explain it.
+
+   Centred by auto margins rather than by `align-items`, because auto margins only take space that
+   is actually free: the panel sits in the middle of a tall stage and pins to the top of a short
+   one, where centring would have hung it over both edges and clipped the screen top and bottom. */
 .panel {
     display: flex;
     flex-direction: column;
@@ -92,6 +103,83 @@ section > uni-alert {
     gap: var(--s2);
     width: 100%;
     min-width: 0;
+    margin: auto 0;
+}
+
+/* The log, once it is open. It stands in for the waiting screen rather than opening under the
+   composer, so it costs the layout nothing: the stage is leftover space, and this takes as much of
+   it as there is. The one scroll in the view is the `<pre>` — everything else here is sized to
+   fit, which is why nothing else may overflow. */
+.console {
+    align-self: stretch;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    min-height: 0;
+    text-align: left;
+}
+
+.console pre {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    margin: 0;
+    font-size: 0.75rem;
+    line-height: 1.5;
+    color: var(--text-subdued, #666);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+/* What stands down when the stage runs short, in order of how much each is decoration before it is
+   information. First to go are the ones that repeat something already on the screen: the echo of
+   the request the reader just typed, the pulse and the tick, which say "working" and "done" beside
+   a line that says so in words. Only then the step rail, the last thing here carrying a fact of
+   its own. The alternative is what a short frame used to produce — a waiting screen clipped
+   mid-row, its last line sitting on top of the composer. */
+.stage[data-room='tight'] .echo,
+.stage[data-room='tight'] .pulse,
+.stage[data-room='tight'] .tick,
+.stage[data-room='minimal'] .echo,
+.stage[data-room='minimal'] .pulse,
+.stage[data-room='minimal'] .tick,
+.stage[data-room='minimal'] .progress {
+    display: none;
+}
+
+/* The summary is prose rather than a row, so it sheds lines instead of standing down. */
+.stage[data-room='tight'] .summary {
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+}
+
+/* The ready screen is the one state with something to do on it, so what survives longest is the
+   line that says it is ready and the button that acts on it. The reassurance underneath is
+   answered by the composer being right there, and the summary of what was built is a nicety next
+   to the way in to look at it. */
+.stage[data-room='tight'] .wait--done .reassure,
+.stage[data-room='minimal'] .wait--done .reassure,
+.stage[data-room='minimal'] .wait--done .summary {
+    display: none;
+}
+
+.stage[data-room='tight'] .open--ready,
+.stage[data-room='minimal'] .open--ready {
+    margin-top: var(--s1);
+}
+
+/* The intro has no decoration to drop — every row is either the question or a way to answer it —
+   so it closes ranks instead: the question steps down to the size of the message it shares a rung
+   with, and the air around it comes out. */
+.stage[data-room='tight'] .intro h2,
+.stage[data-room='minimal'] .intro h2 {
+    font-size: 1.25rem;
+    margin-bottom: var(--s2);
+}
+
+.stage[data-room='minimal'] .label,
+.stage[data-room='minimal'] .intro .reassure {
+    display: none;
 }
 
 /* Same size and weight as `.message`: the question and the progress line are the same rung of the
@@ -278,12 +366,12 @@ section > uni-alert {
     color: var(--text-subdued, #666);
 }
 
-/* Field and button as one row: the button sits at the field's bottom-right corner rather than on
-   its own row underneath, and `align-items: flex-end` keeps it pinned there as `resize="auto"`
-   grows the textarea above it. */
+/* Field and button as one row: the button sits at the field's top-right corner rather than on
+   its own row underneath, and `align-items: flex-start` keeps it pinned there as `resize="auto"`
+   grows the textarea below it. */
 .composer__field {
     display: flex;
-    align-items: flex-end;
+    align-items: flex-start;
     gap: var(--s1);
 }
 
@@ -325,36 +413,10 @@ section > uni-alert {
     margin-top: var(--s4);
 }
 
-/* Everything the agent says about itself lives here: opt-in, capped, and scrolling inside its own
-   box so opening it can never make the view itself scroll. Left-aligned on purpose — it is the one
-   thing on the screen that is read rather than looked at, and centred log lines are unreadable.
-
-   The rule above it is what makes that alignment read as a decision instead of an oversight. On a
-   screen where every other row is centred, a lone left-aligned chevron in the bottom corner looks
-   misplaced; spanning the column under a hairline, it is a footer, and a footer is allowed to be
-   left-aligned. */
-.log {
-    flex: none;
-    align-self: stretch;
-    width: 100%;
-    box-sizing: border-box;
-    padding-top: var(--s2);
-    border-top: 1px solid var(--border-default, #e0e0e0);
-    text-align: left;
-}
-
-/* The cap the expansion panel used to apply through `max-height`. It belongs on the <pre> either
-   way: the log is the only thing in here that can grow without limit, and it is the log that
-   should scroll. */
-.log pre {
-    margin: 0;
-    max-height: 9rem;
-    overflow: auto;
-    font-size: 0.75rem;
-    line-height: 1.5;
-    color: var(--text-subdued, #666);
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
+/* The handle for the log, above the settings row and aligned with it: one more quiet per-turn
+   control, ranked with Model and Effort rather than with the actions. */
+.composer__log {
+    align-self: flex-start;
 }
 
 @keyframes appear {

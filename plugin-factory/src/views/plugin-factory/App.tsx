@@ -58,10 +58,10 @@ const PHASE_OF: Record<SessionState, Phase | null> = {
 };
 
 const STEPS: { phase: Phase; name: string }[] = [
-  { phase: "prepare", name: "Getting ready" },
-  { phase: "build", name: "Building" },
-  { phase: "check", name: "Checking" },
-  { phase: "done", name: "Ready" },
+  { phase: "prepare", name: "Gjør klar" },
+  { phase: "build", name: "Bygger" },
+  { phase: "check", name: "Sjekker" },
+  { phase: "done", name: "Klar" },
 ];
 
 /**
@@ -74,37 +74,37 @@ const STEPS: { phase: Phase; name: string }[] = [
  */
 const CHATTER: Record<Phase, string[]> = {
   prepare: [
-    "Waking up the workshop…",
-    "Unfolding the workbench…",
-    "Plugging in the cables…",
-    "Borrowing a test company…",
-    "Laying out the tools…",
+    "Vekker verkstedet…",
+    "Slår ut arbeidsbenken…",
+    "Kobler til kablene…",
+    "Låner et testfirma…",
+    "Legger fram verktøyet…",
   ],
   build: [
-    "Sketching the layout…",
-    "Writing the code…",
-    "Fitting the pieces together…",
-    "Fidgeting with the details…",
-    "Naming things — the hard part…",
-    "Tightening a few screws…",
-    "Wiring it up to your data…",
+    "Skisserer oppsettet…",
+    "Skriver koden…",
+    "Setter delene sammen…",
+    "Finpusser detaljene…",
+    "Navngir ting — den vanskelige delen…",
+    "Strammer noen skruer…",
+    "Kobler den til dataene dine…",
   ],
   check: [
-    "Reading it back, twice…",
-    "Poking it to see if it wobbles…",
-    "Trying every button…",
-    "Checking the corners…",
+    "Leser gjennom, to ganger…",
+    "Ser om den vipper…",
+    "Prøver hver knapp…",
+    "Sjekker hjørnene…",
   ],
-  done: ["All done."],
+  done: ["Helt ferdig."],
 };
 
 const SUGGESTIONS = [
-  "List my ten largest unpaid customer invoices",
-  "Show a table of my most recent customers",
-  "Add a page that counts orders by status",
+  "List mine ti største ubetalte kundefakturaer",
+  "Vis en tabell over mine nyeste kunder",
+  "Legg til en side som teller ordre etter status",
 ];
 
-/** The disclosure is fixed-height and scrolls inside itself, but there is no reason to keep more. */
+/** The log scrolls inside its own panel, but there is no reason to keep more than this. */
 const MAX_LOG = 60;
 
 /** How long a build may run before the view stops calling it normal and offers a way out. */
@@ -154,7 +154,7 @@ function unwrap(text: string): string {
  * Not a Markdown renderer, and deliberately not: the report is often a page long, the stage is
  * fixed-height by design, and headings and bullets rendered properly would give the payoff screen
  * a document in the middle of it. What belongs here is the sentence that says what was built. The
- * rest is not lost — the whole message goes to the log, under Technical details.
+ * rest is not lost — the whole message goes to the log, under "Tekniske detaljer".
  */
 function lead(text: string): string {
   // Fenced code is never the summary; it is also the one place where a `#` or a `-` at the start
@@ -219,6 +219,15 @@ export default function App({ host }: ViewProps) {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
 
+  // The log opens into the stage rather than into the composer. Anything with a height of its own
+  // down there pushes the field off the bottom of the frame, because the composer is the last row
+  // in a column that never scrolls — see `.stage` in the stylesheet.
+  const [logOpen, setLogOpen] = useState(false);
+
+  // How much of the waiting screen fits. A measurement, not a media query: this view is mounted in
+  // the platform's own frame, which is not the viewport, so nothing in CSS can ask about its size.
+  const [room, setRoom] = useState<"full" | "tight" | "minimal">("full");
+
   // Remembered across reloads, same as the orchestrator override — but per turn, not per
   // session: it rides along on the next `sendMessage` rather than fixing the session at
   // creation, so switching models never requires starting over.
@@ -255,6 +264,8 @@ export default function App({ host }: ViewProps) {
   const abortRef = useRef<AbortController | null>(null);
   const composer = useRef<(HTMLElement & { value: string }) | null>(null);
   const pollRef = useRef<number | null>(null);
+  const logEl = useRef<HTMLPreElement | null>(null);
+  const stageEl = useRef<HTMLDivElement | null>(null);
 
   // The state the last event carried, readable synchronously. An event handler has to compare the
   // phase it is leaving with the one it is entering, and `state` is always a render behind.
@@ -280,6 +291,41 @@ export default function App({ host }: ViewProps) {
     },
     [record],
   );
+
+  // Follows the tail rather than leaving a new line to land below the fold: the box is as tall as
+  // the stage lets it be and the log only ever grows, so without this a reader who opened it would
+  // watch it fill up while the newest line stayed out of sight. Also on open, which is when the
+  // whole backlog appears at once.
+  useEffect(() => {
+    const el = logEl.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [log, logOpen]);
+
+  /**
+   * What the stage can hold.
+   *
+   * It is the one row of the column with no height of its own — it is whatever the title, the
+   * alerts and the composer leave behind — so on a short frame, or with an alert up, it can end up
+   * with less room than the waiting screen needs. Rather than let the screen clip, each rung here
+   * stands a few more of its parts down; the stylesheet says which, and `examples` below thins the
+   * intro the same way.
+   *
+   * Measured off the stage rather than asked of a media query, because the two are not the same
+   * question: an alert appearing takes 6rem out of this box without changing the frame at all.
+   */
+  useEffect(() => {
+    const el = stageEl.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+
+    // Measured against what each rung of the ladder below actually needs — see the stylesheet for
+    // what each one drops.
+    const observer = new ResizeObserver(([entry]) => {
+      const height = entry.contentRect.height;
+      setRoom(height < 136 ? "minimal" : height < 232 ? "tight" : "full");
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     const abort = new AbortController();
@@ -352,13 +398,13 @@ export default function App({ host }: ViewProps) {
           setError(event.message);
           note(`error: ${event.message}`);
           if (event.fatal && live) {
-            hostRef.current.notifications.error("The plugin factory failed");
+            hostRef.current.notifications.error("Plugin-fabrikken feilet");
           }
           break;
         case "turn.done":
           if (live) {
             hostRef.current.notifications.success(
-              "Your plugin has been updated",
+              "Pluginen din er oppdatert",
             );
           }
           break;
@@ -447,6 +493,8 @@ export default function App({ host }: ViewProps) {
     setSummary(null);
     setError(null);
     setLog([]);
+    // Nothing left to read, and an empty box where the waiting screen should be is worse than none.
+    setLogOpen(false);
     setPreviewUrl(null);
     setBuilt(false);
     setBeat(0);
@@ -573,9 +621,21 @@ export default function App({ host }: ViewProps) {
     return () => clearInterval(id);
   }, [working, startedAt]);
 
+  /**
+   * As many examples as the stage can show whole — see the `room` effect. None at all on the
+   * shortest frames, where the question and the field are what there is room for, and the field's
+   * own placeholder says the same thing an example would.
+   */
+  const examples =
+    room === "full"
+      ? SUGGESTIONS
+      : room === "tight"
+        ? SUGGESTIONS.slice(0, 2)
+        : [];
+
   const chatter = CHATTER[phase ?? "build"];
   const message = offline
-    ? "Lost contact with the workshop — reconnecting…"
+    ? "Mistet kontakt med verkstedet — kobler til på nytt…"
     : chatter[beat % chatter.length];
   const slow = working && elapsed >= SLOW_AFTER;
 
@@ -634,7 +694,7 @@ export default function App({ host }: ViewProps) {
         // This button is the only way through — the URL used to be printed beside it as a
         // fallback and is not any more — so a refusal has to be said out loud rather than
         // logged and forgotten.
-        host.notifications.error("Could not open the plugin");
+        host.notifications.error("Kunne ikke åpne pluginen");
         host.log.error(cause, { url });
       }
     },
@@ -655,7 +715,7 @@ export default function App({ host }: ViewProps) {
    * needed for anything but the accessible name.
    */
   const progress = (
-    <div className="progress" role="group" aria-label="Build progress">
+    <div className="progress" role="group" aria-label="Byggefremdrift">
       <uni-stepper horizontal class="rail">
         {STEPS.map(({ phase: step, name }, i) => (
           <uni-step
@@ -693,7 +753,7 @@ export default function App({ host }: ViewProps) {
         small={!ready || undefined}
         onClick={() => openPlugin(previewUrl)}
       >
-        Open your plugin
+        Åpne pluginen din
       </uni-button>
     </div>
   );
@@ -706,21 +766,20 @@ export default function App({ host }: ViewProps) {
                 from it, and printed the plugin's name at nearly the size of the question below it.
                 Two headings, one of them furniture. The name is a nameplate here; the question is
                 the headline, and the h1 is styled to say so. */}
-      <h1 className="title">Plugin Factory</h1>
+      <h1 className="title">Plugin-fabrikken</h1>
 
       {unreachable && (
-        <uni-alert type="critical" header="Cannot reach the plugin factory">
-          Nothing is answering at {base()}. Start the orchestrator, then try
-          again.
+        <uni-alert type="critical" header="Kan ikke nå plugin-fabrikken">
+          Ingenting svarer på {base()}. Start orkestratoren, og prøv igjen.
           <uni-button slot="actions" variant="secondary" small onClick={retry}>
-            Try again
+            Prøv igjen
           </uni-button>
         </uni-alert>
       )}
 
       {offline && !unreachable && (
-        <uni-alert type="warning" header="Lost contact with the plugin factory">
-          Reconnecting. Anything already running carries on without us.
+        <uni-alert type="warning" header="Mistet kontakt med plugin-fabrikken">
+          Kobler til på nytt. Alt som allerede kjører fortsetter uten oss.
         </uni-alert>
       )}
 
@@ -735,13 +794,13 @@ export default function App({ host }: ViewProps) {
           type={mcp.expired ? "warning" : "info"}
           header={
             mcp.expired
-              ? "Reconnect your company data"
-              : "Let the factory check its work against your data"
+              ? "Koble til firmadataene dine på nytt"
+              : "La fabrikken sjekke arbeidet sitt mot dataene dine"
           }
         >
           {mcp.expired
-            ? "The connection has expired. Reconnecting takes a click — you are already signed in."
-            : "Connected, it can confirm a page is asking for the right thing instead of guessing. Opens a consent screen in a new tab."}
+            ? "Tilkoblingen har utløpt. Det tar bare et klikk å koble til på nytt — du er allerede innlogget."
+            : "Når den er tilkoblet, kan den bekrefte at en side spør om riktig ting i stedet for å gjette. Åpner et samtykkevindu i en ny fane."}
           <uni-button
             slot="actions"
             variant="secondary"
@@ -750,16 +809,16 @@ export default function App({ host }: ViewProps) {
             onClick={connectData}
           >
             {connecting
-              ? "Waiting for the other tab…"
+              ? "Venter på den andre fanen…"
               : mcp.expired
-                ? "Reconnect"
-                : "Connect"}
+                ? "Koble til på nytt"
+                : "Koble til"}
           </uni-button>
         </uni-alert>
       )}
 
       {error && (
-        <uni-alert type="critical" header="That did not work">
+        <uni-alert type="critical" header="Det gikk ikke">
           {error}
           <uni-button
             slot="actions"
@@ -767,89 +826,104 @@ export default function App({ host }: ViewProps) {
             small
             onClick={startOver}
           >
-            Start over
+            Start på nytt
           </uni-button>
         </uni-alert>
       )}
 
-      <div className="stage">
-        <div className="panel">
-          {working ? (
-            <div className="wait">
-              <span className="pulse" aria-hidden="true" />
-              {/* The region is what has to stay put; only the line inside it is
-                                replaced. Keying the line remounts it, and remounting is what
-                                restarts the animation — a CSS animation does not re-run when an
-                                element's text changes underneath it. */}
-              <div className="live" aria-live="polite">
-                <p className="message" key={message}>
-                  {message}
+      <div className="stage" ref={stageEl} data-room={room}>
+        {/* The log takes the stage while it is open, rather than opening downwards in the
+            composer: this is the only row that can give up its height, so it is the only place
+            something this tall can go without pushing the field off the bottom of the frame. It
+            is also the only thing in the view allowed to scroll. */}
+        {logOpen ? (
+          <div className="console">
+            <pre ref={logEl}>{log.join("\n")}</pre>
+          </div>
+        ) : (
+          <div className="panel">
+            {working ? (
+              <div className="wait">
+                <span className="pulse" aria-hidden="true" />
+                {/* The region is what has to stay put; only the line inside it is
+                                  replaced. Keying the line remounts it, and remounting is what
+                                  restarts the animation — a CSS animation does not re-run when an
+                                  element's text changes underneath it. */}
+                <div className="live" aria-live="polite">
+                  <p className="message" key={message}>
+                    {message}
+                  </p>
+                </div>
+                {request && <p className="echo">“{request}”</p>}
+                {progress}
+                <p className="reassure">
+                  <span>
+                    {slow
+                      ? "Tar lengre tid enn vanlig. Det kan fortsatt bli ferdig, eller du kan starte på nytt."
+                      : "Fortsatt i gang — dette tar vanligvis et minutt eller to."}
+                  </span>
+                  {/* Deliberately outside the live region: a value that changes once
+                                      a second inside one makes a screen reader re-read the whole
+                                      block once a second. */}
+                  <span aria-hidden="true">{clock(elapsed)}</span>
                 </p>
-              </div>
-              {request && <p className="echo">“{request}”</p>}
-              {progress}
-              <p className="reassure">
-                <span>
-                  {slow
-                    ? "Longer than usual. It may still land, or you can start again."
-                    : "Still going — this usually takes a minute or two."}
-                </span>
-                {/* Deliberately outside the live region: a value that changes once
-                                    a second inside one makes a screen reader re-read the whole
-                                    block once a second. */}
-                <span aria-hidden="true">{clock(elapsed)}</span>
-              </p>
 
-              {open}
-            </div>
-          ) : ready ? (
-            <div className="wait">
-              <span className="tick" aria-hidden="true">
-                ✓
-              </span>
-              <div className="live" aria-live="polite">
-                <p className="message">Your plugin is ready</p>
+                {open}
               </div>
-              {summary && <p className="summary">{summary}</p>}
-              {open}
-              <p className="reassure">
-                Ask for another change below whenever you like.
-              </p>
-            </div>
-          ) : (
-            <div className="intro">
-              {/* One question, asked once. The "in plain language" half of what used
-                                to be two near-identical lines now lives in the composer's
-                                placeholder, where it is read at the moment it is acted on. */}
-              <h2>What should your plugin do?</h2>
-              <p className="label">For example</p>
-              <div className="suggestions">
-                {SUGGESTIONS.map((s) => (
-                  <uni-button
-                    key={s}
-                    variant="secondary"
-                    small
-                    disabled={waiting || !sessionId || undefined}
-                    onClick={() => submit(s)}
-                  >
-                    {s}
-                  </uni-button>
-                ))}
-              </div>
-              {starting && (
-                <p className="reassure" aria-live="polite">
-                  <span className="dots" aria-hidden="true" />
-                  {message} Ready for your first request in a moment.
+            ) : ready ? (
+              <div className="wait wait--done">
+                <span className="tick" aria-hidden="true">
+                  ✓
+                </span>
+                <div className="live" aria-live="polite">
+                  <p className="message">Pluginen din er klar</p>
+                </div>
+                {summary && <p className="summary">{summary}</p>}
+                {open}
+                <p className="reassure">
+                  Be om en ny endring nedenfor når du vil.
                 </p>
-              )}
-              {/* Nothing on a first visit: `built` is false, so the way out of the
-                                view is simply absent until there is somewhere for it to go. This
-                                is the intro a change came back to after failing — the plugin from
-                                before is still standing, and this is how to go and look at it. */}
-              {open}
-            </div>
-          )}
-        </div>
+              </div>
+            ) : (
+              <div className="intro">
+                {/* One question, asked once. The "in plain language" half of what used
+                                  to be two near-identical lines now lives in the composer's
+                                  placeholder, where it is read at the moment it is acted on. */}
+                <h2>Hva skal pluginen din gjøre?</h2>
+                {room === "full" && <p className="label">For eksempel</p>}
+                {/* Fewer of them on a short frame, rather than three of them with the last one
+                                  cut off halfway down. An example is only a way in while it can be
+                                  read and clicked, and the field below says how to write one. */}
+                {examples.length > 0 && (
+                  <div className="suggestions">
+                    {examples.map((s) => (
+                      <uni-button
+                        key={s}
+                        variant="secondary"
+                        small
+                        disabled={waiting || !sessionId || undefined}
+                        onClick={() => submit(s)}
+                      >
+                        {s}
+                      </uni-button>
+                    ))}
+                  </div>
+                )}
+                {starting && (
+                  <p className="reassure" aria-live="polite">
+                    <span className="dots" aria-hidden="true" />
+                    {message} Klar for din første forespørsel om et øyeblikk.
+                  </p>
+                )}
+                {/* Nothing on a first visit: `built` is false, so the way out of the
+                                  view is simply absent until there is somewhere for it to go. This
+                                  is the intro a change came back to after failing — the plugin from
+                                  before is still standing, and this is how to go and look at it. */}
+                {open}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <div
@@ -861,6 +935,22 @@ export default function App({ host }: ViewProps) {
           }
         }}
       >
+        {/* The handle, kept above the settings row where the rest of the quiet per-turn controls
+                    are; what it opens appears directly overhead, in the stage. A disclosure that
+                    opened downwards from here — `uni-details` did — adds its height to the one row
+                    that has none to give, and the field goes off the bottom of the frame with it. */}
+        {log.length > 0 && (
+          <div className="composer__log">
+            <uni-button
+              variant="tertiary"
+              xs
+              aria-expanded={logOpen}
+              onClick={() => setLogOpen((open) => !open)}
+            >
+              {logOpen ? "Skjul tekniske detaljer" : "Tekniske detaljer"}
+            </uni-button>
+          </div>
+        )}
         {/* Apply to the next turn, not the session — the view sends them along with each
                     request rather than fixing them at session creation, so changing either never
                     means starting over. Menus, not comboboxes: there is no filtering to do over a
@@ -870,7 +960,7 @@ export default function App({ host }: ViewProps) {
                     than merely inert while a turn runs, matching the textarea below. */}
         <div className="composer__settings">
           <div className="composer__setting">
-            <span className="composer__setting-label">Model</span>
+            <span className="composer__setting-label">Modell</span>
             <uni-dropdown-menu placement="bottom-start">
               <uni-button
                 slot="toggle"
@@ -899,7 +989,7 @@ export default function App({ host }: ViewProps) {
             </uni-dropdown-menu>
           </div>
           <div className="composer__setting">
-            <span className="composer__setting-label">Effort</span>
+            <span className="composer__setting-label">Innsats</span>
             <uni-dropdown-menu placement="bottom-start">
               <uni-button
                 slot="toggle"
@@ -934,14 +1024,14 @@ export default function App({ host }: ViewProps) {
         <div className="composer__field">
           <uni-textarea
             ref={composer}
-            label="Describe the plugin you want"
+            label="Beskriv pluginen du vil ha"
             label-hidden
             resize="auto"
             readonly={waiting || undefined}
             placeholder={
               waiting
-                ? "Working on it…"
-                : "Describe a page or a change, in plain language…"
+                ? "Arbeider med det…"
+                : "Beskriv en side eller en endring, med vanlige ord…"
             }
           />
           {/* Beside the field rather than under it, so it reads as part of the same
@@ -951,7 +1041,7 @@ export default function App({ host }: ViewProps) {
           <div className="composer__send">
             {working ? (
               <uni-button variant="destructive" small onClick={startOver}>
-                Stop
+                Stopp
               </uni-button>
             ) : (
               /* Secondary for exactly one state. Two filled blue buttons were on screen at
@@ -967,25 +1057,12 @@ export default function App({ host }: ViewProps) {
                 disabled={waiting || undefined}
                 onClick={() => submit()}
               >
-                {built ? "Send" : "Build it"}
+                {built ? "Send" : "Bygg den"}
               </uni-button>
             )}
           </div>
         </div>
       </div>
-
-      {/* `uni-details`, not `uni-expansion-panel`. The panel prints its own toggle label
-                beside the header, and that label defaults to Norwegian — "Åpne" on an otherwise
-                English screen — so the only way to keep it in one language was to pass
-                `open-label`/`close-label` and keep them in step with the rest of the copy. Details
-                has no second label to leak, and no border: the panel was the one boxed thing on a
-                flat screen, which made the debug log look like a debug panel someone forgot to
-                take out. Its `max-height` goes on the <pre> instead — see the stylesheet. */}
-      {log.length > 0 && (
-        <uni-details label="Technical details" class="log">
-          <pre>{log.join("\n")}</pre>
-        </uni-details>
-      )}
     </section>
   );
 }

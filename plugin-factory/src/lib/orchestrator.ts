@@ -80,11 +80,11 @@ export function saveModel(id: ModelId): void {
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export const EFFORTS: Array<{ id: Effort; label: string }> = [
-    { id: 'low', label: 'Low' },
-    { id: 'medium', label: 'Medium' },
-    { id: 'high', label: 'High' },
-    { id: 'xhigh', label: 'Extra high' },
-    { id: 'max', label: 'Max' },
+    { id: 'low', label: 'Lav' },
+    { id: 'medium', label: 'Middels' },
+    { id: 'high', label: 'Høy' },
+    { id: 'xhigh', label: 'Ekstra høy' },
+    { id: 'max', label: 'Maks' },
 ];
 
 export const DEFAULT_EFFORT: Effort = 'high';
