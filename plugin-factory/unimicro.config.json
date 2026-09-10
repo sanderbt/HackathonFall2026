@@ -28,5 +28,6 @@
     "exclude": [
       "**/*.map"
     ]
-  }
+  },
+  "lane": "test"
 }

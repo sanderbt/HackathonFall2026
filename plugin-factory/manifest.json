@@ -29,6 +29,17 @@
           }
         }
       }
+    },
+    {
+      "id": "widget",
+      "model": "native",
+      "shape": "slot",
+      "entry": "./dist/views/widget/index.js",
+      "placement": {
+        "appfrontend": {
+          "slot": "dashboard.widget"
+        }
+      }
     }
   ]
 }

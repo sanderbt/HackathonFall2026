@@ -1,0 +1,310 @@
+/* Tokens cross the boundary the platform mounts this view behind, so they can be used directly.
+   Selector-based rules from the platform's stylesheets do not. */
+:host {
+    display: block;
+    height: 100%;
+}
+
+.view {
+    color: var(--text-default);
+    font-family: var(--font-family, inherit);
+    height: 100%;
+}
+
+/* `height` takes whatever definite height the dashboard hands down. `min-height` is the fallback
+   for when it hands down none — a slot mounted in a container with no height of its own resolves
+   `100%` to `auto`, which is content-sized, and the composer then sits directly under the headline
+   with dead space below instead of at the bottom of a box worth the name.
+
+   Either way this is a column: the composer and the settings row are fixed at the bottom, and the
+   stage takes what is left, same shape as the full page. */
+section {
+    display: flex;
+    flex-direction: column;
+    /* `center`, not the default `stretch`: the only full-width things here are the alerts, which
+       ask for it themselves below. A button left to stretch became a full-width outlined bar. */
+    align-items: center;
+    gap: 0.5rem;
+    height: 100%;
+    min-height: 360px;
+    box-sizing: border-box;
+    padding: 0.75rem;
+    text-align: center;
+}
+
+/* The plugin's name, not the screen's headline: small, quiet, and the only uppercase thing here so
+   it reads as a nameplate rather than as another label. */
+.title {
+    margin: 0;
+    flex: none;
+    align-self: flex-start;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--text-subdued, #666);
+}
+
+/* An alert is a banner about the whole tile, so it spans it, and its message is prose, so it reads
+   from the left. */
+section > uni-alert {
+    flex: none;
+    align-self: stretch;
+    text-align: left;
+}
+
+/* The one row allowed to give up height, which is what keeps the composer inside the frame on a
+   short tile — and the box the `ResizeObserver` in `App.tsx` measures for the `data-room` ladder. */
+.stage {
+    flex: 1 1 auto;
+    align-self: stretch;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+}
+
+.panel {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.375rem;
+    width: 100%;
+    min-width: 0;
+    /* A new state fades in rather than snapping in, so the swap reads as progress rather than as
+       the screen having glitched. */
+    animation: appear 0.3s ease-out;
+}
+
+/* One rung per state, dropped in order of how much each is decoration before it is information:
+   first the parts that repeat something already on screen — the echo of the request the reader just
+   typed, and the pulse and tick that say "working" and "done" beside a line saying so in words —
+   and only then the step rail, the last thing here carrying a fact of its own. */
+.stage[data-room='tight'] .echo,
+.stage[data-room='tight'] .pulse,
+.stage[data-room='tight'] .tick,
+.stage[data-room='minimal'] .echo,
+.stage[data-room='minimal'] .pulse,
+.stage[data-room='minimal'] .tick,
+.stage[data-room='minimal'] .reassure,
+.stage[data-room='minimal'] .label {
+    display: none;
+}
+
+/* The headline of whichever state is showing — one per state, so they share a rung and a size. */
+.message {
+    margin: 0;
+    font-weight: 500;
+    font-size: 1rem;
+    line-height: 1.35;
+    /* While a build runs this line is replaced wholesale every few seconds, and it is keyed in the
+       view so each replacement remounts and re-runs this. Fading makes the swap read as progress
+       rather than as a glitch. */
+    animation: appear 0.35s ease-out;
+}
+
+.stage[data-room='minimal'] .message {
+    font-size: 0.9375rem;
+}
+
+.echo {
+    margin: 0;
+    max-width: 26rem;
+    font-style: italic;
+    font-size: 0.8125rem;
+    color: var(--text-subdued, #666);
+    /* Never allowed to set the height of the tile. */
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+}
+
+/* Capped rather than left to run the full width of the tile: prose set edge to edge across a wide
+   dashboard column reads as a paragraph of filler, and unclamped it pushed the button out. */
+.summary {
+    margin: 0;
+    max-width: 30rem;
+    font-size: 0.8125rem;
+    line-height: 1.45;
+    color: var(--text-subdued, #666);
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    overflow: hidden;
+}
+
+.stage[data-room='tight'] .summary {
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+}
+
+.label {
+    margin: 0;
+    font-size: 0.75rem;
+    color: var(--text-subdued, #666);
+}
+
+.reassure {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    margin: 0.125rem 0 0;
+    font-size: 0.75rem;
+    color: var(--text-subdued, #666);
+}
+
+/* One per row rather than wrapped: two prompts side by side in a narrow tile wrap into ragged rows
+   that read as a row which ran out of space, not as two things you could ask for. */
+.suggestions {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.25rem;
+    max-width: 100%;
+}
+
+/* Sized to its content and centred: the stepper paints a tinted band across the full width of its
+   own box, so stretched it drew a band from edge to edge of the tile. */
+.rail {
+    flex: none;
+    align-self: center;
+    max-width: 100%;
+    margin: 0.25rem 0;
+}
+
+/* Anchored to the state it belongs to rather than floating between groups, and never stretched. */
+.open {
+    display: flex;
+    justify-content: center;
+    flex: none;
+    max-width: 100%;
+    margin-top: 0.25rem;
+}
+
+.open--ready {
+    margin-top: 0.5rem;
+}
+
+.tick {
+    font-size: 1.75rem;
+    line-height: 1;
+    color: var(--icon-success, #50b46f);
+}
+
+/* The design system ships no spinner — only a `loading` attribute on buttons — so the waiting
+   indicator is ours. Two rings, offset, over a solid core that never fades: both rings spend most
+   of their cycle near zero opacity, and an indicator caught at that moment is an empty grey circle,
+   which reads as stopped rather than as busy. */
+.pulse {
+    position: relative;
+    width: 2rem;
+    height: 2rem;
+    flex: none;
+    background: radial-gradient(circle 3px at 50% 50%, currentColor 99%, transparent);
+}
+
+.pulse::before,
+.pulse::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    border: 2px solid currentColor;
+    animation: ripple 1.8s ease-out infinite;
+}
+
+.pulse::after {
+    animation-delay: 0.9s;
+}
+
+/* The startup note's own indicator: the same "still moving" signal as the pulse, at the weight of
+   a line of text rather than a graphic, since starting up is not a build. */
+.dots {
+    width: 1.25rem;
+    height: 0.5rem;
+    flex: none;
+    background:
+        radial-gradient(circle 2px at 3px 50%, currentColor 99%, transparent) 0 0 / 7px 100% no-repeat,
+        radial-gradient(circle 2px at 3px 50%, currentColor 99%, transparent) 7px 0 / 7px 100% no-repeat,
+        radial-gradient(circle 2px at 3px 50%, currentColor 99%, transparent) 14px 0 / 7px 100% no-repeat;
+    animation: blink 1.2s infinite steps(1);
+}
+
+/* Model and effort, right above the field they apply to — quiet `tertiary xs` controls, ranked
+   below Send rather than competing with it. */
+.settings {
+    display: flex;
+    align-self: flex-start;
+    gap: 0.75rem;
+    flex: none;
+}
+
+.composer {
+    display: flex;
+    align-self: stretch;
+    align-items: flex-start;
+    gap: 0.5rem;
+    flex: none;
+}
+
+.composer uni-textarea {
+    flex: 1;
+    min-width: 0;
+    /* The field's own label and validation copy are left-aligned by the design system; the centring
+       the column applies to everything else would fight it. */
+    text-align: left;
+}
+
+@keyframes appear {
+    from {
+        opacity: 0;
+        transform: translateY(0.25rem);
+    }
+}
+
+@keyframes ripple {
+    from {
+        transform: scale(0.3);
+        opacity: 0.9;
+    }
+    /* Holds the ring visible through most of its travel instead of fading out immediately. */
+    60% {
+        opacity: 0.45;
+    }
+    to {
+        transform: scale(1);
+        opacity: 0;
+    }
+}
+
+@keyframes blink {
+    0% {
+        opacity: 0.3;
+    }
+    33% {
+        opacity: 0.6;
+    }
+    66% {
+        opacity: 1;
+    }
+}
+
+/* Several animations run at once here; honour the setting that asks for none of them. */
+@media (prefers-reduced-motion: reduce) {
+    .panel,
+    .message,
+    .pulse::before,
+    .pulse::after,
+    .dots {
+        animation: none;
+    }
+
+    .pulse::before {
+        opacity: 0.5;
+    }
+}

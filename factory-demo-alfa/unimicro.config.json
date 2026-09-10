@@ -32,5 +32,6 @@
   "keep": [
     "src/views/**"
   ],
-  "templateSource": "/Users/sandertorvik/Documents/GitHub/HackathonFall2026/templates/vite-react"
+  "templateSource": "/Users/sandertorvik/Documents/GitHub/HackathonFall2026/templates/vite-react",
+  "lane": "test"
 }
