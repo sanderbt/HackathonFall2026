@@ -799,9 +799,6 @@ export default function App({ host }: ViewProps) {
                                     block once a second. */}
                 <span aria-hidden="true">{clock(elapsed)}</span>
               </p>
-              <uni-button small onClick={startOver}>
-                Stop
-              </uni-button>
 
               {open}
             </div>
@@ -934,39 +931,46 @@ export default function App({ host }: ViewProps) {
         {/* The placeholder is not an example. A fifth one here, absent from the curated
                     three above, made the whole set look generated rather than chosen; this says
                     how to write instead, which is the half of the old intro copy worth keeping. */}
-        <uni-textarea
-          ref={composer}
-          label="Describe the plugin you want"
-          label-hidden
-          resize="auto"
-          readonly={waiting || undefined}
-          placeholder={
-            waiting
-              ? "Working on it…"
-              : "Describe a page or a change, in plain language…"
-          }
-        />
-        {/* Under the field, centred, rather than wedged against its bottom-right corner.
-                    Beside a box this wide a default-width button reads as an afterthought stuck to
-                    the edge, and `resize="auto"` means the box it was aligned to changes height as
-                    you type. Its own row cannot be knocked out of alignment by either. */}
-        <div className="composer__send">
-          {/* Secondary for exactly one state. Two filled blue buttons were on screen at
-                        the moment a build landed — this one and "Open your plugin" — both reading
-                        as the primary action while doing unrelated things. Iterating is the more
-                        frequent action and keeps the primary everywhere else; on the ready screen
-                        the payoff outranks it for one beat, and stepping this down is what says
-                        so. The label goes with it: "Build it" is what a first-time reader is
-                        actually doing, and "Send" only makes sense once there is something to
-                        send a change to. */}
-          <uni-button
-            variant={ready ? "secondary" : "primary"}
-            loading={working || undefined}
-            disabled={waiting || undefined}
-            onClick={() => submit()}
-          >
-            {built ? "Send" : "Build it"}
-          </uni-button>
+        <div className="composer__field">
+          <uni-textarea
+            ref={composer}
+            label="Describe the plugin you want"
+            label-hidden
+            resize="auto"
+            readonly={waiting || undefined}
+            placeholder={
+              waiting
+                ? "Working on it…"
+                : "Describe a page or a change, in plain language…"
+            }
+          />
+          {/* Beside the field rather than under it, so it reads as part of the same
+                        control instead of a separate row. While a turn is running, Stop takes this
+                        same spot instead of sitting down in the working panel — it is the field's
+                        button either way, just aimed at whichever action applies right now. */}
+          <div className="composer__send">
+            {working ? (
+              <uni-button variant="destructive" small onClick={startOver}>
+                Stop
+              </uni-button>
+            ) : (
+              /* Secondary for exactly one state. Two filled blue buttons were on screen at
+                                the moment a build landed — this one and "Open your plugin" — both reading
+                                as the primary action while doing unrelated things. Iterating is the more
+                                frequent action and keeps the primary everywhere else; on the ready screen
+                                the payoff outranks it for one beat, and stepping this down is what says
+                                so. The label goes with it: "Build it" is what a first-time reader is
+                                actually doing, and "Send" only makes sense once there is something to
+                                send a change to. */
+              <uni-button
+                variant={ready ? "secondary" : "primary"}
+                disabled={waiting || undefined}
+                onClick={() => submit()}
+              >
+                {built ? "Send" : "Build it"}
+              </uni-button>
+            )}
+          </div>
         </div>
       </div>
 

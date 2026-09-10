@@ -248,9 +248,6 @@ section > uni-alert {
     max-width: 100%;
 }
 
-/* The send button gets its own row under the field rather than being wedged against its
-   bottom-right corner: beside a box this wide a default-width button read as an afterthought stuck
-   to the edge, and `resize="auto"` means the box it was aligned to changes height as you type. */
 .composer {
     display: flex;
     flex-direction: column;
@@ -281,8 +278,18 @@ section > uni-alert {
     color: var(--text-subdued, #666);
 }
 
-.composer uni-textarea {
-    width: 100%;
+/* Field and button as one row: the button sits at the field's bottom-right corner rather than on
+   its own row underneath, and `align-items: flex-end` keeps it pinned there as `resize="auto"`
+   grows the textarea above it. */
+.composer__field {
+    display: flex;
+    align-items: flex-end;
+    gap: var(--s1);
+}
+
+.composer__field uni-textarea {
+    flex: 1;
+    min-width: 0;
     /* The field's own label and validation copy are left-aligned by the design system; the
        centring the column applies to everything else would fight it. */
     text-align: left;
@@ -290,7 +297,7 @@ section > uni-alert {
 
 .composer__send {
     display: flex;
-    justify-content: center;
+    flex: none;
 }
 
 /* Anchored to the state it belongs to rather than floating between two groups. It used to sit
